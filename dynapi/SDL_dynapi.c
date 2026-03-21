@@ -278,20 +278,12 @@ static SDL_Thread *mySDL_CreateThread(int (SDLCALL *fn)(void *),
 *
 * The game uses raw SDL_Joystick API with assumed Xbox 360 layout indices.
 * We intercept every joystick call and remap through SDL_GameController
-* so any supported pad presents as a fixed Xbox 360 layout.
-*
-* Xbox 360 layout exposed to the game:
-*   Axes:    0=LeftX  1=LeftY  2=RightX  3=RightY
-*            4=LTrigger(0..32767)  5=RTrigger(0..32767)
-*   Buttons: 0=A  1=B  2=X  3=Y  4=LB  5=RB  6=Back  7=Start
-*            8=Guide  9=LStick  10=RStick
-*   Hats:    0=DPAD (SDL hat bitmask from DPAD buttons)*/
-
+* so any supported pad presents as a fixed Xbox 360 layout.*/
 #define MAX_JOYSTICKS 8
 
 typedef struct {
     SDL_Joystick       *joy;
-    SDL_GameController *gc;    /* NULL if device has no known mapping */
+    SDL_GameController *gc;
     int                 device_index;
 } JoyEntry;
 
@@ -301,7 +293,6 @@ static SDL_mutex *joy_lock = NULL;
 static void joy_lock_acquire(void) { jump_table.SDL_LockMutex(joy_lock);   }
 static void joy_lock_release(void) { jump_table.SDL_UnlockMutex(joy_lock); }
 
-/* Find entry by joystick pointer. Must be called under joy_lock. */
 static JoyEntry *joy_find(SDL_Joystick *joy)
 {
     for (int i = 0; i < MAX_JOYSTICKS; i++)
@@ -309,47 +300,37 @@ static JoyEntry *joy_find(SDL_Joystick *joy)
         return NULL;
 }
 
-/* Find entry by device index. Must be called under joy_lock. */
-static JoyEntry *joy_find_by_index(int device_index)
+static int (*real_SDL_NumJoysticks)(void) = NULL;
+static int my_SDL_NumJoysticks(void)
 {
-    for (int i = 0; i < MAX_JOYSTICKS; i++)
-        if (joy_table[i].joy && joy_table[i].device_index == device_index)
-            return &joy_table[i];
-    return NULL;
+    int total = real_SDL_NumJoysticks();
+    int count = 0;
+    for (int i = 0; i < total; i++)
+        if (jump_table.SDL_IsGameController(i)) count++;
+        return count;
 }
-
-/* Open gc for an already-open joystick entry. joy_lock must be held. */
-static void joy_try_open_gc(JoyEntry *e, int device_index)
-{
-    if (e->gc) return;
-    if (jump_table.SDL_IsGameController(device_index))
-        e->gc = jump_table.SDL_GameControllerOpen(device_index);
-}
-
-static SDL_Joystick *(*real_SDL_JoystickOpen)(int) = NULL;
 
 static SDL_Joystick *my_SDL_JoystickOpen(int device_index)
 {
-    SDL_Joystick *joy = real_SDL_JoystickOpen(device_index);
-    if (!joy) return NULL;
+    if (!jump_table.SDL_IsGameController(device_index)) return NULL;
 
     joy_lock_acquire();
     for (int i = 0; i < MAX_JOYSTICKS; i++) {
         if (!joy_table[i].joy) {
-            joy_table[i].joy          = joy;
-            joy_table[i].gc           = NULL;
+            SDL_GameController *gc = jump_table.SDL_GameControllerOpen(device_index);
+            if (!gc) { joy_lock_release(); return NULL; }
+            SDL_Joystick *real_joy = jump_table.SDL_GameControllerGetJoystick(gc);
+            joy_table[i].joy          = real_joy;
+            joy_table[i].gc           = gc;
             joy_table[i].device_index = device_index;
-            joy_try_open_gc(&joy_table[i], device_index);
-            LOG_FPRINTF(stderr, "[sdl-hook] JoystickOpen(%d): joy=%p gc=%p\n",
-                        device_index, (void *)joy, (void *)joy_table[i].gc);
-            break;
+            LOG_FPRINTF(stderr, "[sdl-hook] JoystickOpen(%d): gc=%p joy=%p\n", device_index, (void *)gc, (void *)real_joy);
+            joy_lock_release();
+            return real_joy;
         }
     }
     joy_lock_release();
-    return joy;
+    return NULL;
 }
-
-static void (*real_SDL_JoystickClose)(SDL_Joystick *) = NULL;
 
 static void my_SDL_JoystickClose(SDL_Joystick *joy)
 {
@@ -362,10 +343,21 @@ static void my_SDL_JoystickClose(SDL_Joystick *joy)
         e->device_index = -1;
     }
     joy_lock_release();
-    real_SDL_JoystickClose(joy);
 }
 
-static const char *(*real_SDL_JoystickName)(SDL_Joystick *) = NULL;
+static SDL_bool my_SDL_JoystickGetAttached(SDL_Joystick *joy)
+{
+    joy_lock_acquire();
+    JoyEntry *e = joy_find(joy);
+    SDL_bool result = (e && e->gc) ? SDL_TRUE : SDL_FALSE;
+    joy_lock_release();
+    return result;
+}
+
+static void my_SDL_JoystickUpdate(void)
+{
+    jump_table.SDL_GameControllerUpdate();
+}
 
 static const char *my_SDL_JoystickName(SDL_Joystick *joy)
 {
@@ -373,10 +365,8 @@ static const char *my_SDL_JoystickName(SDL_Joystick *joy)
     JoyEntry *e = joy_find(joy);
     int has_gc = e && e->gc;
     joy_lock_release();
-    return has_gc ? "Xbox 360 Controller" : real_SDL_JoystickName(joy);
+    return has_gc ? "Xbox 360 Controller" : NULL;
 }
-
-static int (*real_SDL_JoystickNumAxes)(SDL_Joystick *) = NULL;
 
 static int my_SDL_JoystickNumAxes(SDL_Joystick *joy)
 {
@@ -384,10 +374,8 @@ static int my_SDL_JoystickNumAxes(SDL_Joystick *joy)
     JoyEntry *e = joy_find(joy);
     int has_gc = e && e->gc;
     joy_lock_release();
-    return has_gc ? 6 : real_SDL_JoystickNumAxes(joy);
+    return has_gc ? 6 : 0;
 }
-
-static int (*real_SDL_JoystickNumButtons)(SDL_Joystick *) = NULL;
 
 static int my_SDL_JoystickNumButtons(SDL_Joystick *joy)
 {
@@ -395,10 +383,8 @@ static int my_SDL_JoystickNumButtons(SDL_Joystick *joy)
     JoyEntry *e = joy_find(joy);
     int has_gc = e && e->gc;
     joy_lock_release();
-    return has_gc ? 11 : real_SDL_JoystickNumButtons(joy);
+    return has_gc ? 11 : 0;
 }
-
-static int (*real_SDL_JoystickNumHats)(SDL_Joystick *) = NULL;
 
 static int my_SDL_JoystickNumHats(SDL_Joystick *joy)
 {
@@ -406,10 +392,8 @@ static int my_SDL_JoystickNumHats(SDL_Joystick *joy)
     JoyEntry *e = joy_find(joy);
     int has_gc = e && e->gc;
     joy_lock_release();
-    return has_gc ? 1 : real_SDL_JoystickNumHats(joy);
+    return has_gc ? 1 : 0;
 }
-
-static Sint16 (*real_SDL_JoystickGetAxis)(SDL_Joystick *, int) = NULL;
 
 static Sint16 my_SDL_JoystickGetAxis(SDL_Joystick *joy, int axis)
 {
@@ -418,7 +402,7 @@ static Sint16 my_SDL_JoystickGetAxis(SDL_Joystick *joy, int axis)
     SDL_GameController *gc = e ? e->gc : NULL;
     joy_lock_release();
 
-    if (!gc) return real_SDL_JoystickGetAxis(joy, axis);
+    if (!gc) return 0;
 
     static const SDL_GameControllerAxis axis_map[6] = {
         SDL_CONTROLLER_AXIS_LEFTX,        /* 0 */
@@ -433,7 +417,7 @@ static Sint16 my_SDL_JoystickGetAxis(SDL_Joystick *joy, int axis)
     Sint16 val = jump_table.SDL_GameControllerGetAxis(gc, axis_map[axis]);
 
     /* Triggers: SDL GameController returns 0..32767 (0=rest).
-    *      Game expects raw Xbox range -32768..32767 (-32768=rest). */
+     *      Game expects raw Xbox range -32768..32767 (-32768=rest). */
     if (axis == 2 || axis == 5) {
         int remapped = (int)val * 2 - 32767;
         if (remapped < -32768) remapped = -32768;
@@ -443,8 +427,6 @@ static Sint16 my_SDL_JoystickGetAxis(SDL_Joystick *joy, int axis)
     return val;
 }
 
-static Uint8 (*real_SDL_JoystickGetButton)(SDL_Joystick *, int) = NULL;
-
 static Uint8 my_SDL_JoystickGetButton(SDL_Joystick *joy, int button)
 {
     joy_lock_acquire();
@@ -452,13 +434,8 @@ static Uint8 my_SDL_JoystickGetButton(SDL_Joystick *joy, int button)
     SDL_GameController *gc = e ? e->gc : NULL;
     joy_lock_release();
 
-    if (!gc) return real_SDL_JoystickGetButton(joy, button);
+    if (!gc) return 0;
 
-    /*
-    * Xbox 360 button map:
-    *   0=A  1=B  2=X  3=Y  4=LB  5=RB  6=Back  7=Start
-    *   8=Guide  9=LStick  10=RStick
-    */
     static const SDL_GameControllerButton btn_map[11] = {
         SDL_CONTROLLER_BUTTON_A,
         SDL_CONTROLLER_BUTTON_B,
@@ -476,9 +453,6 @@ static Uint8 my_SDL_JoystickGetButton(SDL_Joystick *joy, int button)
     return jump_table.SDL_GameControllerGetButton(gc, btn_map[button]);
 }
 
-/* ── SDL_JoystickGetHat ── */
-static Uint8 (*real_SDL_JoystickGetHat)(SDL_Joystick *, int) = NULL;
-
 static Uint8 my_SDL_JoystickGetHat(SDL_Joystick *joy, int hat)
 {
     joy_lock_acquire();
@@ -486,7 +460,7 @@ static Uint8 my_SDL_JoystickGetHat(SDL_Joystick *joy, int hat)
     SDL_GameController *gc = e ? e->gc : NULL;
     joy_lock_release();
 
-    if (!gc) return real_SDL_JoystickGetHat(joy, hat);
+    if (!gc) return SDL_HAT_CENTERED;
     if (hat != 0) return SDL_HAT_CENTERED;
 
     Uint8 val = SDL_HAT_CENTERED;
@@ -500,22 +474,6 @@ static Uint8 my_SDL_JoystickGetHat(SDL_Joystick *joy, int hat)
         val |= SDL_HAT_RIGHT;
     return val;
 }
-
-static void (*real_SDL_JoystickUpdate)(void) = NULL;
-
-static void my_SDL_JoystickUpdate(void)
-{
-    real_SDL_JoystickUpdate();
-    jump_table.SDL_GameControllerUpdate();
-}
-
-static SDL_bool (*real_SDL_JoystickGetAttached)(SDL_Joystick *) = NULL;
-
-static SDL_bool my_SDL_JoystickGetAttached(SDL_Joystick *joy)
-{
-    return real_SDL_JoystickGetAttached(joy);
-}
-
 /*
 * SDL_JOYDEVICEADDED fires when a new joystick is plugged in.
 * The game has already opened its joystick list at startup so it may not
@@ -535,52 +493,44 @@ static int my_SDL_PollEvent(SDL_Event *event)
         if (ret == 0) return 0;
 
         switch (event->type) {
-
             case SDL_JOYDEVICEADDED: {
                 int idx = event->jdevice.which;
-                /*
-                * Pre-open the gc side so it is ready if the game calls
-                * JoystickOpen for this index. We don't open the joystick here
-                * because the game will do that itself if it wants it.
-                * We just record that a mapping is available.
-                */
-                LOG_FPRINTF(stderr, "[sdl-hook] JOYDEVICEADDED: index=%d isGC=%d\n",
-                            idx, jump_table.SDL_IsGameController(idx));
-                break;
+                if (!jump_table.SDL_IsGameController(idx)) continue;
+                LOG_FPRINTF(stderr, "[sdl-hook] hotplug ADDED: idx=%d\n", idx);
+                break; /* game will call JoystickOpen itself */
             }
 
             case SDL_JOYDEVICEREMOVED: {
-                /*
-                * event->jdevice.which is the instance id here, not the device
-                * index. Find our entry by matching the joystick instance id.
-                */
                 SDL_JoystickID iid = event->jdevice.which;
                 joy_lock_acquire();
                 for (int i = 0; i < MAX_JOYSTICKS; i++) {
                     if (joy_table[i].joy &&
                         jump_table.SDL_JoystickInstanceID(joy_table[i].joy) == iid) {
-                        LOG_FPRINTF(stderr, "[sdl-hook] JOYDEVICEREMOVED: iid=%d, closing gc=%p\n",
-                                    iid, (void *)joy_table[i].gc);
-                        if (joy_table[i].gc) {
-                            jump_table.SDL_GameControllerClose(joy_table[i].gc);
-                            joy_table[i].gc = NULL;
-                        }
-                        /* Leave joy entry; the game will call JoystickClose itself */
-                        break;
-                        }
+                        LOG_FPRINTF(stderr, "[sdl-hook] hotplug REMOVED: iid=%d gc=%p\n", iid, (void *)joy_table[i].gc);
+                    if (joy_table[i].gc) {
+                        jump_table.SDL_GameControllerClose(joy_table[i].gc);
+                        joy_table[i].gc = NULL;
+                    }
+                    /* leave joy entry — game will call JoystickClose */
+                    break;
+                    }
                 }
                 joy_lock_release();
                 break;
             }
-
             /* Suppress controller events — game uses joystick API only */
+            case SDL_JOYAXISMOTION:
+            case SDL_JOYBALLMOTION:
+            case SDL_JOYHATMOTION:
+            case SDL_JOYBUTTONDOWN:
+            case SDL_JOYBUTTONUP:
             case SDL_CONTROLLERDEVICEADDED:
             case SDL_CONTROLLERDEVICEREMOVED:
             case SDL_CONTROLLERDEVICEREMAPPED:
             case SDL_CONTROLLERBUTTONDOWN:
             case SDL_CONTROLLERBUTTONUP:
             case SDL_CONTROLLERAXISMOTION:
-                continue;   /* eat event, poll next */
+                continue;
 
             default:
                 break;
@@ -675,38 +625,20 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     jump_table.SDL_PollEvent  = my_SDL_PollEvent;
 
     /* Joystick → GameController remapping */
-    real_SDL_JoystickOpen              = jump_table.SDL_JoystickOpen;
+
+    real_SDL_NumJoysticks              = jump_table.SDL_NumJoysticks;
+    jump_table.SDL_NumJoysticks        = my_SDL_NumJoysticks;
     jump_table.SDL_JoystickOpen        = my_SDL_JoystickOpen;
-
-    real_SDL_JoystickClose             = jump_table.SDL_JoystickClose;
     jump_table.SDL_JoystickClose       = my_SDL_JoystickClose;
-
-    real_SDL_JoystickName              = jump_table.SDL_JoystickName;
-    jump_table.SDL_JoystickName        = my_SDL_JoystickName;
-
-    real_SDL_JoystickNumAxes           = jump_table.SDL_JoystickNumAxes;
-    jump_table.SDL_JoystickNumAxes     = my_SDL_JoystickNumAxes;
-
-    real_SDL_JoystickNumButtons        = jump_table.SDL_JoystickNumButtons;
-    jump_table.SDL_JoystickNumButtons  = my_SDL_JoystickNumButtons;
-
-    real_SDL_JoystickNumHats           = jump_table.SDL_JoystickNumHats;
-    jump_table.SDL_JoystickNumHats     = my_SDL_JoystickNumHats;
-
-    real_SDL_JoystickGetAxis           = jump_table.SDL_JoystickGetAxis;
-    jump_table.SDL_JoystickGetAxis     = my_SDL_JoystickGetAxis;
-
-    real_SDL_JoystickGetButton         = jump_table.SDL_JoystickGetButton;
-    jump_table.SDL_JoystickGetButton   = my_SDL_JoystickGetButton;
-
-    real_SDL_JoystickGetHat            = jump_table.SDL_JoystickGetHat;
-    jump_table.SDL_JoystickGetHat      = my_SDL_JoystickGetHat;
-
-    real_SDL_JoystickGetAttached       = jump_table.SDL_JoystickGetAttached;
     jump_table.SDL_JoystickGetAttached = my_SDL_JoystickGetAttached;
-
-    real_SDL_JoystickUpdate            = jump_table.SDL_JoystickUpdate;
     jump_table.SDL_JoystickUpdate      = my_SDL_JoystickUpdate;
+    jump_table.SDL_JoystickName        = my_SDL_JoystickName;
+    jump_table.SDL_JoystickNumAxes     = my_SDL_JoystickNumAxes;
+    jump_table.SDL_JoystickNumButtons  = my_SDL_JoystickNumButtons;
+    jump_table.SDL_JoystickNumHats     = my_SDL_JoystickNumHats;
+    jump_table.SDL_JoystickGetAxis     = my_SDL_JoystickGetAxis;
+    jump_table.SDL_JoystickGetButton   = my_SDL_JoystickGetButton;
+    jump_table.SDL_JoystickGetHat      = my_SDL_JoystickGetHat;
 
     real_SDL_GetRelativeMouseState       = jump_table.SDL_GetRelativeMouseState;
     jump_table.SDL_GetRelativeMouseState = (void*)my_SDL_GetRelativeMouseState;
