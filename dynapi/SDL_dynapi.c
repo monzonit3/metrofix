@@ -569,6 +569,13 @@ static int my_SDL_PollEvent(SDL_Event *event)
     }
 }
 
+static Uint32 (*real_SDL_GetRelativeMouseState)(int *, int *) = NULL;
+static Uint32 my_SDL_GetRelativeMouseState(int *x, int *y, int *z)
+{
+    Uint32 buttons = real_SDL_GetRelativeMouseState(x, y);
+    if (z) *z = 0; //WTF WAS 4A THINKING?????
+    return buttons;
+}
 
 #define SDL_DYNAPI_PROC(rc, fn, params, args, ret) \
 static rc wrapper_##fn params { \
@@ -677,6 +684,8 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     real_SDL_JoystickUpdate            = jump_table.SDL_JoystickUpdate;
     jump_table.SDL_JoystickUpdate      = my_SDL_JoystickUpdate;
 
+    real_SDL_GetRelativeMouseState       = jump_table.SDL_GetRelativeMouseState;
+    jump_table.SDL_GetRelativeMouseState = (void*)my_SDL_GetRelativeMouseState;
     if (output_jump_table != &jump_table)
         jump_table.SDL_memcpy(output_jump_table, &jump_table, tablesize);
 
