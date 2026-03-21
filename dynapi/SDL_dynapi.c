@@ -55,19 +55,38 @@ static void gl_unlock(void) { jump_table.SDL_UnlockMutex(gl_primary_lock); }
  * is owned by another thread.
  */
 #define BUFFER_WINDOW_COUNT 24
-static SDL_Window *buffer_windows[BUFFER_WINDOW_COUNT];
+typedef struct {
+    SDL_Window *window;
+    int         occupied;
+} EGLSeat;
+
+static EGLSeat            egl_seats[BUFFER_WINDOW_COUNT];
+static SDL_mutex         *egl_seat_lock = NULL;
+static __thread EGLSeat  *current_seat  = NULL;
+
+static EGLSeat *seat_acquire(void)
+{
+    if (current_seat) return current_seat;
+    jump_table.SDL_LockMutex(egl_seat_lock);
+    for (int i = 0; i < BUFFER_WINDOW_COUNT; i++) {
+        if (!egl_seats[i].occupied) {
+            egl_seats[i].occupied = 1;
+            current_seat = &egl_seats[i];
+            break;
+        }
+    }
+    jump_table.SDL_UnlockMutex(egl_seat_lock);
+    return current_seat;
+}
 
 static int (*realSDL_GL_MakeCurrent)(SDL_Window *, SDL_GLContext) = NULL;
 
 static int mySDL_GL_MakeCurrent(SDL_Window *window, SDL_GLContext context)
 {
     spoof_window = window;
-    for (int i = 0; i < BUFFER_WINDOW_COUNT; i++) {
-        if (buffer_windows[i] &&
-            realSDL_GL_MakeCurrent(buffer_windows[i], context) == 0)
-            return 0;
-    }
-    /* Fallback: try the real window (works on GLX, may fail on EGL) */
+    EGLSeat *seat = seat_acquire();
+    if (seat && realSDL_GL_MakeCurrent(seat->window, context) == 0)
+        return 0;
     return realSDL_GL_MakeCurrent(window, context);
 }
 
@@ -77,8 +96,8 @@ static SDL_Window *mySDL_GL_GetCurrentWindow(void) { return spoof_window; }
 static void (*realSDL_GL_SwapWindow)(SDL_Window *) = NULL;
 static void mySDL_GL_SwapWindow(SDL_Window *window)
 {
-    SDL_GLContext currc = jump_table.SDL_GL_GetCurrentContext();
-    realSDL_GL_MakeCurrent(spoof_window, currc);
+    SDL_GLContext ctx = jump_table.SDL_GL_GetCurrentContext();
+    realSDL_GL_MakeCurrent(spoof_window, ctx);
     realSDL_GL_SwapWindow(spoof_window);
 }
 
@@ -103,12 +122,14 @@ static SDL_Window *mySDL_CreateWindow(const char *title,
     static int pool_created = 0;
     if (!pool_created) {
         pool_created = 1;
-        for (int i = 0; i < BUFFER_WINDOW_COUNT; i++)
-            buffer_windows[i] = real_SDL_CreateWindow(
+        for (int i = 0; i < BUFFER_WINDOW_COUNT; i++) {
+            egl_seats[i].window   = real_SDL_CreateWindow(
                 "Metro EGL workaround",
                 SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                 5, 5,
                 SDL_WINDOW_HIDDEN | SDL_WINDOW_OPENGL);
+            egl_seats[i].occupied = 0;
+        }
     }
     return real_SDL_CreateWindow(title, x, y, w, h, flags);
 }
@@ -613,6 +634,9 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
 
     gl_primary_lock = jump_table.SDL_CreateMutex();
     if (!gl_primary_lock) { fputs("[sdl-hook] gl_primary_lock failed\n", stderr); exit(1); }
+
+    egl_seat_lock = jump_table.SDL_CreateMutex();
+    if (!egl_seat_lock) { fputs("[sdl-hook] egl_seat_lock failed\n", stderr); exit(1); }
 
     joy_lock = jump_table.SDL_CreateMutex();
     if (!joy_lock) { fputs("[sdl-hook] joy_lock failed\n", stderr); exit(1); }
