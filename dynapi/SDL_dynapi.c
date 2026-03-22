@@ -20,9 +20,7 @@ static int sdl_debug_enable = 0;
 #include "SDL_dynapi.h"
 
 #define SDL_DYNAPI_PROC(rc, fn, params, args, ret) \
-typedef rc (SDLCALL *SDL_DYNAPIFN_##fn) params;\
-static rc SDLCALL fn##_DEFAULT params;         \
-extern rc SDLCALL fn##_REAL params;
+typedef rc (SDLCALL *SDL_DYNAPIFN_##fn) params;
 #include "SDL_dynapi_procs.h"
 #undef SDL_DYNAPI_PROC
 
@@ -109,6 +107,7 @@ static int mySDL_Init(Uint32 flags)
         alreadydone = 1;
         jump_table.SDL_GameControllerAddMappingsFromRW(
             jump_table.SDL_RWFromFile("gamecontrollerdb.txt", "rb"), 1);
+        jump_table.SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
     }
     return realSDL_Init(flags);
 }
@@ -557,7 +556,6 @@ static int my_SDL_PollEvent(SDL_Event *event)
     }
 }
 
-static Uint32 (*real_SDL_GetRelativeMouseState)(int *, int *) = NULL;
 static Uint32 my_SDL_GetRelativeMouseState(int *x, int *y, int *z)
 {
     if (x) *x = our_xdelta;
@@ -568,6 +566,27 @@ static Uint32 my_SDL_GetRelativeMouseState(int *x, int *y, int *z)
     our_zdelta = 0;
     return our_buttonstate;
 }
+
+#include "shadersanitizer.h"
+
+static void *(*real_SDL_GL_GetProcAddress)(const char *);
+static void *my_SDL_GL_GetProcAddress(const char *proc)
+{
+    void *ret=real_SDL_GL_GetProcAddress(proc);
+    if (strcmp(proc, "glShaderSource") == 0) {
+        if (!real_glShaderSource) {
+            real_glShaderSource = ret;
+        }
+        return (void *)our_glShaderSource;
+        /*
+        Some drivers do not like the game's usage of mid-shader #extension directives (mesa uses an ad-hoc workaround by looking at the binary name),
+        so we pass shaders through a sanitizer before
+        */
+    }
+    return ret;
+}
+
+
 #define SDL_DYNAPI_PROC(rc, fn, params, args, ret) \
 static rc wrapper_##fn params { \
     if (real_jump_table.fn == NULL) { \
@@ -660,8 +679,10 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     jump_table.SDL_JoystickGetButton   = my_SDL_JoystickGetButton;
     jump_table.SDL_JoystickGetHat      = my_SDL_JoystickGetHat;
 
-    real_SDL_GetRelativeMouseState       = jump_table.SDL_GetRelativeMouseState;
     jump_table.SDL_GetRelativeMouseState = (void*)my_SDL_GetRelativeMouseState; //4A broke the ABI
+
+    real_SDL_GL_GetProcAddress = jump_table.SDL_GL_GetProcAddress;
+    jump_table.SDL_GL_GetProcAddress = my_SDL_GL_GetProcAddress;
 
     if (output_jump_table != &jump_table)
         jump_table.SDL_memcpy(output_jump_table, &jump_table, tablesize);
