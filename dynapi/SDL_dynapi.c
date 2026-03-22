@@ -484,8 +484,12 @@ static Uint8 my_SDL_JoystickGetHat(SDL_Joystick *joy, int hat)
 * We also suppress SDL_CONTROLLERDEVICE* events — the game only speaks
 * SDL_JOYSTICK* and duplicate device events confuse some engines.
 */
-static int (*real_SDL_PollEvent)(SDL_Event *) = NULL;
 
+static int (*real_SDL_PollEvent)(SDL_Event *) = NULL;
+static int our_xdelta = 0;
+static int our_ydelta = 0;
+static int our_zdelta = 1234;
+static Uint32 our_buttonstate = 0;
 static int my_SDL_PollEvent(SDL_Event *event)
 {
     for (;;) {
@@ -531,7 +535,20 @@ static int my_SDL_PollEvent(SDL_Event *event)
             case SDL_CONTROLLERBUTTONUP:
             case SDL_CONTROLLERAXISMOTION:
                 continue;
+            case SDL_MOUSEMOTION:
+                our_xdelta += event->motion.xrel;
+                our_ydelta += event->motion.yrel;
+                our_buttonstate = event->motion.state;
+                continue;
 
+            case SDL_MOUSEWHEEL:
+                our_zdelta += event->wheel.y;
+                continue;
+
+            case SDL_MOUSEBUTTONDOWN:
+            case SDL_MOUSEBUTTONUP:
+                our_buttonstate = jump_table.SDL_GetMouseState(NULL, NULL);
+                continue;
             default:
                 break;
         }
@@ -543,11 +560,14 @@ static int my_SDL_PollEvent(SDL_Event *event)
 static Uint32 (*real_SDL_GetRelativeMouseState)(int *, int *) = NULL;
 static Uint32 my_SDL_GetRelativeMouseState(int *x, int *y, int *z)
 {
-    Uint32 buttons = real_SDL_GetRelativeMouseState(x, y);
-    if (z) *z = 0; //WTF WAS 4A THINKING?????
-    return buttons;
+    if (x) *x = our_xdelta;
+    if (y) *y = our_ydelta;
+    if (z) *z = our_zdelta;
+    our_xdelta = 0;
+    our_ydelta = 0;
+    our_zdelta = 0;
+    return our_buttonstate;
 }
-
 #define SDL_DYNAPI_PROC(rc, fn, params, args, ret) \
 static rc wrapper_##fn params { \
     if (real_jump_table.fn == NULL) { \
@@ -641,7 +661,8 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     jump_table.SDL_JoystickGetHat      = my_SDL_JoystickGetHat;
 
     real_SDL_GetRelativeMouseState       = jump_table.SDL_GetRelativeMouseState;
-    jump_table.SDL_GetRelativeMouseState = (void*)my_SDL_GetRelativeMouseState;
+    jump_table.SDL_GetRelativeMouseState = (void*)my_SDL_GetRelativeMouseState; //4A broke the ABI
+
     if (output_jump_table != &jump_table)
         jump_table.SDL_memcpy(output_jump_table, &jump_table, tablesize);
 
