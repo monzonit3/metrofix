@@ -843,8 +843,8 @@ static void my_SDL_GL_SwapWindow(SDL_Window *window)
     realSDL_GL_SwapWindow(spoof_window);
 }
 
-int (*realSDL_SetWindowFullscreen)(SDL_Window * window,Uint32 flags);
-int my_SDL_SetWindowFullscreen(SDL_Window * window,Uint32 flags){
+static int (*realSDL_SetWindowFullscreen)(SDL_Window * window,Uint32 flags);
+static int my_SDL_SetWindowFullscreen(SDL_Window * window,Uint32 flags){
     if(flags!=0){
         flags=SDL_WINDOW_FULLSCREEN_DESKTOP;
         is_fullscreen=1;
