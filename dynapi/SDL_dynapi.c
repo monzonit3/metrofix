@@ -48,7 +48,7 @@ static void gl_unlock(void) { jump_table.SDL_UnlockMutex(gl_primary_lock); }
 
 /*
  * EGL enforces one surface per thread. We pre-create 24 hidden windows,
- * each with its own EGLSurface. mySDL_GL_MakeCurrent tries each one until
+ * each with its own EGLSurface. my_SDL_GL_MakeCurrent tries each one until
  * one succeeds, sidestepping EGL_BAD_ACCESS when the main window's surface
  * is owned by another thread.
  */
@@ -79,7 +79,7 @@ static EGLSeat *seat_acquire(void)
 
 static int (*realSDL_GL_MakeCurrent)(SDL_Window *, SDL_GLContext) = NULL;
 
-static int mySDL_GL_MakeCurrent(SDL_Window *window, SDL_GLContext context)
+static int my_SDL_GL_MakeCurrent(SDL_Window *window, SDL_GLContext context)
 {
     spoof_window = window;
     EGLSeat *seat = seat_acquire();
@@ -89,18 +89,17 @@ static int mySDL_GL_MakeCurrent(SDL_Window *window, SDL_GLContext context)
 }
 
 static SDL_Window *(*realSDL_GL_GetCurrentWindow)(void) = NULL;
-static SDL_Window *mySDL_GL_GetCurrentWindow(void) { return spoof_window; }
+static SDL_Window *my_SDL_GL_GetCurrentWindow(void) { return spoof_window; }
 
 static void (*realSDL_GL_SwapWindow)(SDL_Window *) = NULL;
-static void mySDL_GL_SwapWindow(SDL_Window *window)
+static void my_SDL_GL_SwapWindow(SDL_Window *window)
 {
     SDL_GLContext ctx = jump_table.SDL_GL_GetCurrentContext();
     realSDL_GL_MakeCurrent(spoof_window, ctx);
     realSDL_GL_SwapWindow(spoof_window);
 }
-
 static int (*realSDL_Init)(Uint32) = NULL;
-static int mySDL_Init(Uint32 flags)
+static int my_SDL_Init(Uint32 flags)
 {
     static int alreadydone = 0;
     if (!alreadydone) {
@@ -114,7 +113,7 @@ static int mySDL_Init(Uint32 flags)
 
 static SDL_Window *(*real_SDL_CreateWindow)(const char *, int, int, int, int, Uint32) = NULL;
 
-static SDL_Window *mySDL_CreateWindow(const char *title,
+static SDL_Window *my_SDL_CreateWindow(const char *title,
                                       int x, int y, int w, int h,
                                       Uint32 flags)
 {
@@ -135,7 +134,7 @@ static SDL_Window *mySDL_CreateWindow(const char *title,
 
 static SDL_GLContext (*realSDL_GL_CreateContext)(SDL_Window *) = NULL;
 
-static SDL_GLContext mySDL_GL_CreateContext(SDL_Window *w)
+static SDL_GLContext my_SDL_GL_CreateContext(SDL_Window *w)
 {
     gl_lock();
     int already_have_ctx = gl_primary.initialized;
@@ -171,7 +170,7 @@ static SDL_GLContext mySDL_GL_CreateContext(SDL_Window *w)
 
 static void (*realSDL_GL_DeleteContext)(SDL_GLContext) = NULL;
 
-static void mySDL_GL_DeleteContext(SDL_GLContext ctx)
+static void my_SDL_GL_DeleteContext(SDL_GLContext ctx)
 {
     gl_lock();
     if (ctx == gl_primary.context) {
@@ -218,7 +217,7 @@ static int SDLCALL wrapped_thread_fn(void *arg)
 static SDL_Thread *(*realSDL_CreateThread)(int (SDLCALL *)(void *),
                                            const char *, void *) = NULL;
 
-static SDL_Thread *mySDL_CreateThread(int (SDLCALL *fn)(void *),
+static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
                                         const char *name, void *data)
 {
     gl_lock();
@@ -485,10 +484,10 @@ static Uint8 my_SDL_JoystickGetHat(SDL_Joystick *joy, int hat)
 */
 
 static int (*real_SDL_PollEvent)(SDL_Event *) = NULL;
-static int our_xdelta = 0;
-static int our_ydelta = 0;
-static int our_zdelta = 1234;
-static Uint32 our_buttonstate = 0;
+static int my_xdelta = 0;
+static int my_ydelta = 0;
+static int my_zdelta = 1234;
+static Uint32 my_buttonstate = 0;
 static int my_SDL_PollEvent(SDL_Event *event)
 {
     for (;;) {
@@ -535,18 +534,18 @@ static int my_SDL_PollEvent(SDL_Event *event)
             case SDL_CONTROLLERAXISMOTION:
                 continue;
             case SDL_MOUSEMOTION:
-                our_xdelta += event->motion.xrel;
-                our_ydelta += event->motion.yrel;
-                our_buttonstate = event->motion.state;
+                my_xdelta += event->motion.xrel;
+                my_ydelta += event->motion.yrel;
+                my_buttonstate = event->motion.state;
                 continue;
 
             case SDL_MOUSEWHEEL:
-                our_zdelta += event->wheel.y;
+                my_zdelta += event->wheel.y;
                 continue;
 
             case SDL_MOUSEBUTTONDOWN:
             case SDL_MOUSEBUTTONUP:
-                our_buttonstate = jump_table.SDL_GetMouseState(NULL, NULL);
+                my_buttonstate = jump_table.SDL_GetMouseState(NULL, NULL);
                 continue;
             default:
                 break;
@@ -558,13 +557,13 @@ static int my_SDL_PollEvent(SDL_Event *event)
 
 static Uint32 my_SDL_GetRelativeMouseState(int *x, int *y, int *z)
 {
-    if (x) *x = our_xdelta;
-    if (y) *y = our_ydelta;
-    if (z) *z = our_zdelta;
-    our_xdelta = 0;
-    our_ydelta = 0;
-    our_zdelta = 0;
-    return our_buttonstate;
+    if (x) *x = my_xdelta;
+    if (y) *y = my_ydelta;
+    if (z) *z = my_zdelta;
+    my_xdelta = 0;
+    my_ydelta = 0;
+    my_zdelta = 0;
+    return my_buttonstate;
 }
 
 #include "shadersanitizer.h"
@@ -577,15 +576,102 @@ static void *my_SDL_GL_GetProcAddress(const char *proc)
         if (!real_glShaderSource) {
             real_glShaderSource = ret;
         }
-        return (void *)our_glShaderSource;
+        return (void *)my_glShaderSource;
         /*
-        Some drivers do not like the game's usage of mid-shader #extension directives (mesa uses an ad-hoc workaround by looking at the binary name),
+        Some drivers do not like the game's usage of mid-shader #extension directives as it's non-standard (mesa uses an ad-hoc workaround by looking at the binary name),
         so we pass shaders through a sanitizer before
         */
     }
     return ret;
 }
 
+
+#include <sys/mman.h>
+
+static void *vib_this = NULL;
+static SDL_mutex *vib_lock = NULL;
+
+static void patch_write(void *dst, void *src, size_t len)
+{
+    uintptr_t page = (uintptr_t)dst & ~(4095UL);
+    mprotect((void *)page, 4096, PROT_READ | PROT_WRITE | PROT_EXEC);
+    memcpy(dst, src, len);
+    mprotect((void *)page, 4096, PROT_READ | PROT_EXEC);
+}
+
+static void patch_nop(void *dst, size_t len)
+{
+    uintptr_t page = (uintptr_t)dst & ~(4095UL);
+    mprotect((void *)page, 4096, PROT_READ | PROT_WRITE | PROT_EXEC);
+    memset(dst, 0x90, len);
+    mprotect((void *)page, 4096, PROT_READ | PROT_EXEC);
+}
+
+static void my_activate_vibration(void *this)
+{
+    float cam_left  = *(float *)((char *)this + 0x5f0);
+    float cam_right = *(float *)((char *)this + 0x5f4);
+    float game_left = *(float *)((char *)this + 0x5f8);
+    float game_right = *(float *)((char *)this + 0x5fc);
+    float koef      = *(float *)((char *)this + 0x600);
+
+    float left  = (cam_left  + game_left)  * koef;
+    float right = (cam_right + game_right) * koef;
+
+    if (left  > 1.0f) left  = 1.0f;
+    if (right > 1.0f) right = 1.0f;
+
+    joy_lock_acquire();
+    for (int i = 0; i < MAX_JOYSTICKS; i++) {
+        if (joy_table[i].gc) {
+            jump_table.SDL_GameControllerRumble(joy_table[i].gc,
+                                                (Uint16)(left  * 65535.0f),
+                                                (Uint16)(right * 65535.0f),
+                                                100000);
+        }
+    }
+    joy_lock_release();
+}
+
+/* our replacement deactivate_vibration */
+static void my_deactivate_vibration(void *this)
+{
+    joy_lock_acquire();
+    for (int i = 0; i < MAX_JOYSTICKS; i++) {
+        if (joy_table[i].gc)
+          jump_table.SDL_GameControllerRumble(joy_table[i].gc, 0, 0, 0);
+    }
+    joy_lock_release();
+}
+
+static void apply_vibration_patches(void)
+{
+    /* force allow_option_vibration to always return 1 —
+     * patch: mov al, 1; ret  (3 bytes) over the existing mov al, [this+0x5dc]; ret */
+    static const uint8_t always_true[] = { 0xb0, 0x01, 0xc3 };
+    patch_write((void *)0xd43b80, (void *)always_true, sizeof always_true);
+
+    /* redirect activate_vibration (posix) to our implementation
+     * patch: mov rax, imm64; jmp rax  (12 bytes) */
+    uint8_t jmp_activate[12] = {
+        0x48, 0xb8,                          /* mov rax, ... */
+        0,0,0,0,0,0,0,0,                     /* imm64 placeholder */
+        0xff, 0xe0                            /* jmp rax */
+    };
+    *(uintptr_t *)(jmp_activate + 2) = (uintptr_t)my_activate_vibration;
+    patch_write((void *)0xd43b20, jmp_activate, sizeof jmp_activate);
+
+    /* redirect deactivate_vibration (posix override at 0xd43900) */
+    uint8_t jmp_deactivate[12] = {
+        0x48, 0xb8,
+        0,0,0,0,0,0,0,0,
+        0xff, 0xe0
+    };
+    *(uintptr_t *)(jmp_deactivate + 2) = (uintptr_t)my_deactivate_vibration;
+    patch_write((void *)0xd43900, jmp_deactivate, sizeof jmp_deactivate);
+
+    DEBUGLOG("[sdl-hook] vibration patches applied");
+}
 
 #define SDL_DYNAPI_PROC(rc, fn, params, args, ret) \
 static rc wrapper_##fn params { \
@@ -630,34 +716,36 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     joy_lock = jump_table.SDL_CreateMutex();
     if (!joy_lock) { fputs("[sdl-hook] joy_lock failed\n", stderr); exit(1); }
 
+    apply_vibration_patches();
+
     /* SDL_Init */
     realSDL_Init        = jump_table.SDL_Init;
-    jump_table.SDL_Init = mySDL_Init;
+    jump_table.SDL_Init = my_SDL_Init;
 
     /* Window management */
     real_SDL_CreateWindow        = jump_table.SDL_CreateWindow;
-    jump_table.SDL_CreateWindow  = mySDL_CreateWindow;
+    jump_table.SDL_CreateWindow  = my_SDL_CreateWindow;
 
     /* GL context management */
     realSDL_GL_CreateContext        = jump_table.SDL_GL_CreateContext;
-    jump_table.SDL_GL_CreateContext = mySDL_GL_CreateContext;
+    jump_table.SDL_GL_CreateContext = my_SDL_GL_CreateContext;
 
     realSDL_GL_DeleteContext        = jump_table.SDL_GL_DeleteContext;
-    jump_table.SDL_GL_DeleteContext = mySDL_GL_DeleteContext;
+    jump_table.SDL_GL_DeleteContext = my_SDL_GL_DeleteContext;
 
     /* GL surface / swap */
     realSDL_GL_MakeCurrent        = jump_table.SDL_GL_MakeCurrent;
-    jump_table.SDL_GL_MakeCurrent = mySDL_GL_MakeCurrent;
+    jump_table.SDL_GL_MakeCurrent = my_SDL_GL_MakeCurrent;
 
     realSDL_GL_GetCurrentWindow        = jump_table.SDL_GL_GetCurrentWindow;
-    jump_table.SDL_GL_GetCurrentWindow = mySDL_GL_GetCurrentWindow;
+    jump_table.SDL_GL_GetCurrentWindow = my_SDL_GL_GetCurrentWindow;
 
     realSDL_GL_SwapWindow        = jump_table.SDL_GL_SwapWindow;
-    jump_table.SDL_GL_SwapWindow = mySDL_GL_SwapWindow;
+    jump_table.SDL_GL_SwapWindow = my_SDL_GL_SwapWindow;
 
     /* Thread creation */
     realSDL_CreateThread        = jump_table.SDL_CreateThread;
-    jump_table.SDL_CreateThread = mySDL_CreateThread;
+    jump_table.SDL_CreateThread = my_SDL_CreateThread;
 
     /* Event pump */
     real_SDL_PollEvent        = jump_table.SDL_PollEvent;

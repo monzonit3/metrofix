@@ -342,7 +342,7 @@ static void resolve_real_glShaderSource(void)
 /* -------------------------------------------------------------------------
  * Shared implementation called from all intercept points
  * ------------------------------------------------------------------------- */
-static void our_glShaderSource(GLuint shader, GLsizei count,
+static void my_glShaderSource(GLuint shader, GLsizei count,
                                const GLchar *const *strings,
                                const GLint *length)
 {
