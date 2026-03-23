@@ -6,17 +6,6 @@
 #include <stdint.h>
 #include <ctype.h>
 //#define DEBUG_SANITIZE
-typedef unsigned int  GLenum;
-typedef unsigned int  GLuint;
-typedef int           GLint;
-typedef int           GLsizei;
-typedef char          GLchar;
-typedef void         *GLeglClientBufferEXT; /* unused but makes pointer sizes match */
-
-typedef void (*PFNGLSHADERSOURCEPROC)(GLuint, GLsizei,
-                                      const GLchar *const *,
-                                      const GLint *);
-
 /* -------------------------------------------------------------------------
  * Helpers
  * ------------------------------------------------------------------------- */

@@ -1,5 +1,5 @@
 CC = gcc
-LD = $(CC)
+LD = gcc
 
 CFLAGS  = -fPIC -Os
 LDFLAGS = -shared -s

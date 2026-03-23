@@ -11,6 +11,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <sys/mman.h>
+#include <GL/gl.h>
 
 static int sdl_debug_enable = 0;
 #include <pthread.h>
@@ -48,11 +51,12 @@ static void gl_unlock(void) { jump_table.SDL_UnlockMutex(gl_primary_lock); }
 
 /*
  * EGL enforces one surface per thread. We pre-create 24 hidden windows,
- * each with its own EGLSurface. my_SDL_GL_MakeCurrent tries each one until
- * one succeeds, sidestepping EGL_BAD_ACCESS when the main window's surface
- * is owned by another thread.
+ * each with its own EGLSurface. seat_acquire() gives each thread a
+ * dedicated surface, sidestepping EGL_BAD_ACCESS when the main window's
+ * surface is owned by another thread.
  */
 #define BUFFER_WINDOW_COUNT 24
+
 typedef struct {
     SDL_Window *window;
     int         occupied;
@@ -77,6 +81,8 @@ static EGLSeat *seat_acquire(void)
     return current_seat;
 }
 
+/* ── GL surface / swap ── */
+
 static int (*realSDL_GL_MakeCurrent)(SDL_Window *, SDL_GLContext) = NULL;
 
 static int my_SDL_GL_MakeCurrent(SDL_Window *window, SDL_GLContext context)
@@ -91,13 +97,8 @@ static int my_SDL_GL_MakeCurrent(SDL_Window *window, SDL_GLContext context)
 static SDL_Window *(*realSDL_GL_GetCurrentWindow)(void) = NULL;
 static SDL_Window *my_SDL_GL_GetCurrentWindow(void) { return spoof_window; }
 
-static void (*realSDL_GL_SwapWindow)(SDL_Window *) = NULL;
-static void my_SDL_GL_SwapWindow(SDL_Window *window)
-{
-    SDL_GLContext ctx = jump_table.SDL_GL_GetCurrentContext();
-    realSDL_GL_MakeCurrent(spoof_window, ctx);
-    realSDL_GL_SwapWindow(spoof_window);
-}
+/* ── Init ── */
+
 static int (*realSDL_Init)(Uint32) = NULL;
 static int my_SDL_Init(Uint32 flags)
 {
@@ -111,11 +112,30 @@ static int my_SDL_Init(Uint32 flags)
     return realSDL_Init(flags);
 }
 
-static SDL_Window *(*real_SDL_CreateWindow)(const char *, int, int, int, int, Uint32) = NULL;
+/* ── Resolution override ── */
 
+static int override_w = 0;
+static int override_h = 0;
+
+static int (*real_SDL_GetDisplayBounds)(int, SDL_Rect *) = NULL;
+
+static int my_SDL_GetDisplayBounds(int displayIndex, SDL_Rect *rect)
+{
+    int ret = real_SDL_GetDisplayBounds(displayIndex, rect);
+    if (ret == 0 && override_w > 0 && override_h > 0) {
+        rect->w = override_w;
+        rect->h = override_h;
+    }
+    return ret;
+}
+
+/* ── Window management ── */
+
+static SDL_Window *(*real_SDL_CreateWindow)(const char *, int, int, int, int, Uint32) = NULL;
+static int is_fullscreen;
 static SDL_Window *my_SDL_CreateWindow(const char *title,
-                                      int x, int y, int w, int h,
-                                      Uint32 flags)
+                                       int x, int y, int w, int h,
+                                       Uint32 flags)
 {
     static int pool_created = 0;
     if (!pool_created) {
@@ -129,8 +149,38 @@ static SDL_Window *my_SDL_CreateWindow(const char *title,
             egl_seats[i].occupied = 0;
         }
     }
+
+    /* game was told display is override_w x override_h — create window at
+     * real monitor size so we have pixels to scale into */
+    if (override_w > 0 && override_h > 0 && w == override_w && h == override_h && (flags&(SDL_WINDOW_FULLSCREEN|SDL_WINDOW_FULLSCREEN_DESKTOP))!=0 ) {
+        SDL_Rect real_bounds = {0};
+        real_SDL_GetDisplayBounds(0, &real_bounds);
+        LOG_FPRINTF(stderr, "[sdl-hook] CreateWindow: overriding %dx%d -> %dx%d\n",
+                    w, h, real_bounds.w, real_bounds.h);
+        w = real_bounds.w;
+        h = real_bounds.h;
+        is_fullscreen=1;
+    }
+    if((flags&SDL_WINDOW_FULLSCREEN)!=0){
+        flags&=~SDL_WINDOW_FULLSCREEN;
+        flags|=SDL_WINDOW_FULLSCREEN_DESKTOP;
+    }
     return real_SDL_CreateWindow(title, x, y, w, h, flags);
 }
+static void (*realSDL_GetWindowSize)(SDL_Window * window, int *w,int *h);
+static void my_SDL_GetWindowSize(SDL_Window * window, int *w,int *h){
+    if (override_w > 0 && override_h > 0 && is_fullscreen){
+        *w=override_w;
+        *h=override_h;
+    }
+    else{
+        realSDL_GetWindowSize(window,w,h);
+    }
+}
+
+static void my_SDL_SetWindowSize(SDL_Window * window, int w,int h){}
+
+/* ── GL context management ── */
 
 static SDL_GLContext (*realSDL_GL_CreateContext)(SDL_Window *) = NULL;
 
@@ -182,6 +232,8 @@ static void my_SDL_GL_DeleteContext(SDL_GLContext ctx)
     gl_unlock();
     realSDL_GL_DeleteContext(ctx);
 }
+
+/* ── Thread wrapping ── */
 
 typedef struct {
     int          (SDLCALL *real_fn)(void *);
@@ -272,11 +324,13 @@ static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
     return realSDL_CreateThread(wrapped_thread_fn, name, wd);
 }
 
-/* Joystick → Xbox 360 GameController wrapper
+/* ── Joystick → Xbox 360 GameController wrapper ──
 *
 * The game uses raw SDL_Joystick API with assumed Xbox 360 layout indices.
 * We intercept every joystick call and remap through SDL_GameController
-* so any supported pad presents as a fixed Xbox 360 layout.*/
+* so any supported pad presents as a fixed Xbox 360 layout.
+*/
+
 #define MAX_JOYSTICKS 8
 
 typedef struct {
@@ -321,7 +375,8 @@ static SDL_Joystick *my_SDL_JoystickOpen(int device_index)
             joy_table[i].joy          = real_joy;
             joy_table[i].gc           = gc;
             joy_table[i].device_index = device_index;
-            LOG_FPRINTF(stderr, "[sdl-hook] JoystickOpen(%d): gc=%p joy=%p\n", device_index, (void *)gc, (void *)real_joy);
+            LOG_FPRINTF(stderr, "[sdl-hook] JoystickOpen(%d): gc=%p joy=%p\n",
+                        device_index, (void *)gc, (void *)real_joy);
             joy_lock_release();
             return real_joy;
         }
@@ -472,22 +527,16 @@ static Uint8 my_SDL_JoystickGetHat(SDL_Joystick *joy, int hat)
         val |= SDL_HAT_RIGHT;
     return val;
 }
-/*
-* SDL_JOYDEVICEADDED fires when a new joystick is plugged in.
-* The game has already opened its joystick list at startup so it may not
-* handle hotplug itself. We open the new device into our table so that
-* if the game calls JoystickOpen for it later, the gc is ready.
-* SDL_JOYDEVICEREMOVED closes any gc we have open for that instance id.
-*
-* We also suppress SDL_CONTROLLERDEVICE* events — the game only speaks
-* SDL_JOYSTICK* and duplicate device events confuse some engines.
-*/
+
+/* ── Event pump ── */
 
 static int (*real_SDL_PollEvent)(SDL_Event *) = NULL;
-static int my_xdelta = 0;
-static int my_ydelta = 0;
-static int my_zdelta = 1234;
+
+static int    my_xdelta     = 0;
+static int    my_ydelta     = 0;
+static int    my_zdelta     = 0;
 static Uint32 my_buttonstate = 0;
+
 static int my_SDL_PollEvent(SDL_Event *event)
 {
     for (;;) {
@@ -508,19 +557,22 @@ static int my_SDL_PollEvent(SDL_Event *event)
                 for (int i = 0; i < MAX_JOYSTICKS; i++) {
                     if (joy_table[i].joy &&
                         jump_table.SDL_JoystickInstanceID(joy_table[i].joy) == iid) {
-                        LOG_FPRINTF(stderr, "[sdl-hook] hotplug REMOVED: iid=%d gc=%p\n", iid, (void *)joy_table[i].gc);
-                    if (joy_table[i].gc) {
-                        jump_table.SDL_GameControllerClose(joy_table[i].gc);
-                        joy_table[i].gc = NULL;
-                    }
-                    /* leave joy entry — game will call JoystickClose */
-                    break;
-                    }
+                        LOG_FPRINTF(stderr, "[sdl-hook] hotplug REMOVED: iid=%d gc=%p\n",
+                                    iid, (void *)joy_table[i].gc);
+                        if (joy_table[i].gc) {
+                            jump_table.SDL_GameControllerClose(joy_table[i].gc);
+                            joy_table[i].gc = NULL;
+                        }
+                        /* leave joy entry — game will call JoystickClose */
+                        break;
+                        }
                 }
                 joy_lock_release();
                 break;
             }
-            /* Suppress controller events — game uses joystick API only */
+
+            /* suppress raw joystick state events and controller events —
+            * game uses joystick API only, we synthesize from gc */
             case SDL_JOYAXISMOTION:
             case SDL_JOYBALLMOTION:
             case SDL_JOYHATMOTION:
@@ -533,27 +585,36 @@ static int my_SDL_PollEvent(SDL_Event *event)
             case SDL_CONTROLLERBUTTONUP:
             case SDL_CONTROLLERAXISMOTION:
                 continue;
-            case SDL_MOUSEMOTION:
-                my_xdelta += event->motion.xrel;
-                my_ydelta += event->motion.yrel;
-                my_buttonstate = event->motion.state;
-                continue;
 
-            case SDL_MOUSEWHEEL:
-                my_zdelta += event->wheel.y;
-                continue;
+                /* accumulate mouse state for GetRelativeMouseState —
+                * 4A broke the ABI by adding a z parameter */
+                case SDL_MOUSEMOTION:
+                    my_xdelta     += event->motion.xrel;
+                    my_ydelta     += event->motion.yrel;
+                    my_buttonstate = event->motion.state;
+                    break;
 
-            case SDL_MOUSEBUTTONDOWN:
-            case SDL_MOUSEBUTTONUP:
-                my_buttonstate = jump_table.SDL_GetMouseState(NULL, NULL);
-                continue;
-            default:
-                break;
+                case SDL_MOUSEWHEEL:
+                    my_zdelta += event->wheel.y;
+                    break;
+
+                case SDL_MOUSEBUTTONDOWN:
+                case SDL_MOUSEBUTTONUP:
+                    my_buttonstate = jump_table.SDL_GetMouseState(NULL, NULL);
+                    break;
+
+                default:
+                    break;
         }
 
         return ret;
     }
 }
+
+/* SDL_GetRelativeMouseState — 4A extended with z parameter, stock SDL has 2 args.
+* We track deltas ourselves in my_SDL_PollEvent to avoid calling stock SDL's
+* version which would pump the wrong event queue. */
+static Uint32 (*real_SDL_GetRelativeMouseState)(int *, int *) = NULL;
 
 static Uint32 my_SDL_GetRelativeMouseState(int *x, int *y, int *z)
 {
@@ -566,30 +627,261 @@ static Uint32 my_SDL_GetRelativeMouseState(int *x, int *y, int *z)
     return my_buttonstate;
 }
 
+/* ── GL scaling ── */
+
+static int      scaling_context_initialized          = 0;
+static int      OpenGLLogicalScalingWidth            = 0;
+static int      OpenGLLogicalScalingHeight           = 0;
+static GLuint   OpenGLLogicalScalingFBO              = 0;
+static GLuint   OpenGLLogicalScalingColor            = 0;
+static GLuint   OpenGLLogicalScalingDepth            = 0;
+static int      OpenGLLogicalScalingSamples          = 0;
+static GLuint   OpenGLLogicalScalingMultisampleFBO   = 0;
+static GLuint   OpenGLLogicalScalingMultisampleColor = 0;
+static GLuint   OpenGLLogicalScalingMultisampleDepth = 0;
+static int      WantScaleMethodNearest               = 0;
+
+static void (*my_glGenFramebuffers)(GLsizei, GLuint *)                                                          = NULL;
+static void (*my_glDeleteFramebuffers)(GLsizei, const GLuint *)                                                  = NULL;
+static void (*my_glBindFramebuffer)(GLenum, GLuint)                                                              = NULL;
+static void (*my_glGenRenderbuffers)(GLsizei, GLuint *)                                                          = NULL;
+static void (*my_glDeleteRenderbuffers)(GLsizei, const GLuint *)                                                 = NULL;
+static void (*my_glBindRenderbuffer)(GLenum, GLuint)                                                             = NULL;
+static void (*my_glRenderbufferStorage)(GLenum, GLenum, GLsizei, GLsizei)                                        = NULL;
+static void (*my_glRenderbufferStorageMultisample)(GLenum, GLsizei, GLenum, GLsizei, GLsizei)                    = NULL;
+static void (*my_glFramebufferRenderbuffer)(GLenum, GLenum, GLenum, GLuint)                                      = NULL;
+static GLenum (*my_glCheckFramebufferStatus)(GLenum)                                                             = NULL;
+static void (*my_glBlitFramebuffer)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum)  = NULL;
+static void (*my_glViewport)(GLint, GLint, GLsizei, GLsizei)                                                     = NULL;
+static void (*my_glScissor)(GLint, GLint, GLsizei, GLsizei)                                                      = NULL;
+static void (*my_glClear)(GLbitfield)                                                                             = NULL;
+static void (*my_glClearColor)(GLfloat, GLfloat, GLfloat, GLfloat)                                              = NULL;
+static void (*my_glGetIntegerv)(GLenum, GLint *)                                                                  = NULL;
+static void (*my_glGetFloatv)(GLenum, GLfloat *)                                                                 = NULL;
+static GLboolean (*my_glIsEnabled)(GLenum)                                                                        = NULL;
+static void (*my_glEnable)(GLenum)                                                                               = NULL;
+static void (*my_glDisable)(GLenum)                                                                              = NULL;
+static GLenum (*my_glGetError)(void)                                                                             = NULL;
+
+static void scaling_load_gl_procs(void)
+{
+    #define GLPROC(fn) my_##fn = (void *)jump_table.SDL_GL_GetProcAddress(#fn)
+    GLPROC(glGenFramebuffers);
+    GLPROC(glDeleteFramebuffers);
+    GLPROC(glBindFramebuffer);
+    GLPROC(glGenRenderbuffers);
+    GLPROC(glDeleteRenderbuffers);
+    GLPROC(glBindRenderbuffer);
+    GLPROC(glRenderbufferStorage);
+    GLPROC(glRenderbufferStorageMultisample);
+    GLPROC(glFramebufferRenderbuffer);
+    GLPROC(glCheckFramebufferStatus);
+    GLPROC(glBlitFramebuffer);
+    GLPROC(glViewport);
+    GLPROC(glScissor);
+    GLPROC(glClear);
+    GLPROC(glClearColor);
+    GLPROC(glGetIntegerv);
+    GLPROC(glGetFloatv);
+    GLPROC(glIsEnabled);
+    GLPROC(glEnable);
+    GLPROC(glDisable);
+    GLPROC(glGetError);
+    #undef GLPROC
+}
+
+static SDL_Rect GetOpenGLLogicalScalingViewport(int pw, int ph)
+{
+    SDL_Rect r;
+    float want = (float)OpenGLLogicalScalingWidth  / (float)OpenGLLogicalScalingHeight;
+    float real = (float)pw / (float)ph;
+
+    if (jump_table.SDL_fabs(want - real) < 0.0001f) {
+        r.x = 0; r.y = 0; r.w = pw; r.h = ph;
+    } else if (want > real) {
+        float scale = (float)pw / OpenGLLogicalScalingWidth;
+        r.x = 0; r.w = pw;
+        r.h = (int)jump_table.SDL_floor(OpenGLLogicalScalingHeight * scale);
+        r.y = (ph - r.h) / 2;
+    } else {
+        float scale = (float)ph / OpenGLLogicalScalingHeight;
+        r.y = 0; r.h = ph;
+        r.w = (int)jump_table.SDL_floor(OpenGLLogicalScalingWidth * scale);
+        r.x = (pw - r.w) / 2;
+    }
+    return r;
+}
+
+static int InitializeOpenGLScaling(int logical_w, int logical_h)
+{
+    if (!my_glGenFramebuffers)
+        scaling_load_gl_procs();
+
+    if (OpenGLLogicalScalingFBO &&
+        logical_w == OpenGLLogicalScalingWidth &&
+        logical_h == OpenGLLogicalScalingHeight &&
+        scaling_context_initialized)
+        return SDL_TRUE;
+
+    if (OpenGLLogicalScalingFBO) {
+        my_glDeleteFramebuffers(1, &OpenGLLogicalScalingFBO);
+        my_glDeleteRenderbuffers(1, &OpenGLLogicalScalingColor);
+        my_glDeleteRenderbuffers(1, &OpenGLLogicalScalingDepth);
+        OpenGLLogicalScalingFBO = OpenGLLogicalScalingColor = OpenGLLogicalScalingDepth = 0;
+        if (OpenGLLogicalScalingMultisampleFBO) {
+            my_glDeleteFramebuffers(1, &OpenGLLogicalScalingMultisampleFBO);
+            my_glDeleteRenderbuffers(1, &OpenGLLogicalScalingMultisampleColor);
+            my_glDeleteRenderbuffers(1, &OpenGLLogicalScalingMultisampleDepth);
+            OpenGLLogicalScalingMultisampleFBO = OpenGLLogicalScalingMultisampleColor = OpenGLLogicalScalingMultisampleDepth = 0;
+        }
+    }
+
+    int alpha_size = 0, depth_size = 0, stencil_size = 0;
+    jump_table.SDL_GL_GetAttribute(SDL_GL_ALPHA_SIZE,   &alpha_size);
+    jump_table.SDL_GL_GetAttribute(SDL_GL_DEPTH_SIZE,   &depth_size);
+    jump_table.SDL_GL_GetAttribute(SDL_GL_STENCIL_SIZE, &stencil_size);
+
+    my_glGenFramebuffers(1, &OpenGLLogicalScalingFBO);
+    my_glGenRenderbuffers(1, &OpenGLLogicalScalingColor);
+    my_glGenRenderbuffers(1, &OpenGLLogicalScalingDepth);
+    my_glBindFramebuffer(GL_FRAMEBUFFER, OpenGLLogicalScalingFBO);
+
+    my_glBindRenderbuffer(GL_RENDERBUFFER, OpenGLLogicalScalingColor);
+    if (OpenGLLogicalScalingSamples > 0)
+        my_glRenderbufferStorageMultisample(GL_RENDERBUFFER, OpenGLLogicalScalingSamples,
+                                            alpha_size > 0 ? GL_RGBA8 : GL_RGB8, logical_w, logical_h);
+        else
+            my_glRenderbufferStorage(GL_RENDERBUFFER,
+                                    alpha_size > 0 ? GL_RGBA8 : GL_RGB8, logical_w, logical_h);
+            my_glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, OpenGLLogicalScalingColor);
+
+        if (depth_size > 0 || stencil_size > 0) {
+            my_glBindRenderbuffer(GL_RENDERBUFFER, OpenGLLogicalScalingDepth);
+            if (OpenGLLogicalScalingSamples > 0)
+                my_glRenderbufferStorageMultisample(GL_RENDERBUFFER, OpenGLLogicalScalingSamples,
+                                                    GL_DEPTH24_STENCIL8, logical_w, logical_h);
+                else
+                    my_glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, logical_w, logical_h);
+            if (depth_size > 0)
+                my_glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,   GL_RENDERBUFFER, OpenGLLogicalScalingDepth);
+            if (stencil_size > 0)
+                my_glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, OpenGLLogicalScalingDepth);
+        }
+        my_glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+        if (my_glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
+            my_glGetError() != GL_NO_ERROR) {
+            my_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        my_glDeleteRenderbuffers(1, &OpenGLLogicalScalingColor);
+        my_glDeleteRenderbuffers(1, &OpenGLLogicalScalingDepth);
+        my_glDeleteFramebuffers(1, &OpenGLLogicalScalingFBO);
+        OpenGLLogicalScalingFBO = OpenGLLogicalScalingColor = OpenGLLogicalScalingDepth = 0;
+        DEBUGLOG("[sdl-hook] scaling FBO incomplete — scaling disabled");
+        return SDL_FALSE;
+            }
+
+            my_glViewport(0, 0, logical_w, logical_h);
+            my_glScissor(0, 0, logical_w, logical_h);
+            my_glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            my_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+            OpenGLLogicalScalingWidth   = logical_w;
+            OpenGLLogicalScalingHeight  = logical_h;
+            scaling_context_initialized = 1;
+            LOG_FPRINTF(stderr, "[sdl-hook] scaling FBO initialized: %dx%d\n", logical_w, logical_h);
+            return SDL_TRUE;
+}
+
+static void (*realSDL_GL_SwapWindow)(SDL_Window *) = NULL;
+
+static void my_SDL_GL_SwapWindow(SDL_Window *window)
+{
+    SDL_GLContext ctx = jump_table.SDL_GL_GetCurrentContext();
+
+    if (override_w > 0 && override_h > 0 && is_fullscreen) {
+        if (!scaling_context_initialized)
+            InitializeOpenGLScaling(override_w, override_h);
+
+        if (scaling_context_initialized && OpenGLLogicalScalingFBO) {
+            int physical_w = 0, physical_h = 0;
+            jump_table.SDL_GL_GetDrawableSize(spoof_window, &physical_w, &physical_h);
+
+            SDL_Rect dstrect = GetOpenGLLogicalScalingViewport(physical_w, physical_h);
+            GLenum filter = WantScaleMethodNearest ? GL_NEAREST : GL_LINEAR;
+
+            GLboolean has_scissor = my_glIsEnabled(GL_SCISSOR_TEST);
+            if (has_scissor) my_glDisable(GL_SCISSOR_TEST);
+
+            GLfloat cc[4];
+            my_glGetFloatv(GL_COLOR_CLEAR_VALUE, cc);
+
+            /* game rendered to FBO 0 at logical res — copy to scaling FBO */
+            my_glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            my_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGLLogicalScalingFBO);
+            my_glBlitFramebuffer(
+                0, 0, override_w, override_h,
+                0, 0, override_w, override_h,
+                GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+            /* blit scaling FBO to screen with aspect ratio correction */
+            my_glBindFramebuffer(GL_READ_FRAMEBUFFER, OpenGLLogicalScalingFBO);
+            my_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            my_glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            my_glClear(GL_COLOR_BUFFER_BIT);
+            my_glBlitFramebuffer(
+                0, 0, override_w, override_h,
+                dstrect.x, dstrect.y, dstrect.x + dstrect.w, dstrect.y + dstrect.h,
+                GL_COLOR_BUFFER_BIT, filter);
+
+            my_glClearColor(cc[0], cc[1], cc[2], cc[3]);
+            if (has_scissor) my_glEnable(GL_SCISSOR_TEST);
+            my_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
+    }
+
+    realSDL_GL_MakeCurrent(spoof_window, ctx);
+    realSDL_GL_SwapWindow(spoof_window);
+}
+
+int (*realSDL_SetWindowFullscreen)(SDL_Window * window,Uint32 flags);
+int my_SDL_SetWindowFullscreen(SDL_Window * window,Uint32 flags){
+    if(flags!=0){
+        flags=SDL_WINDOW_FULLSCREEN_DESKTOP;
+        is_fullscreen=1;
+    }
+    else{
+        is_fullscreen=0;
+    }
+    return realSDL_SetWindowFullscreen(window,flags);
+}
+
+/* ── GL proc address hook (shader sanitizer + future hooks) ── */
+
 #include "shadersanitizer.h"
 
-static void *(*real_SDL_GL_GetProcAddress)(const char *);
+static void *(*real_SDL_GL_GetProcAddress)(const char *) = NULL;
+
 static void *my_SDL_GL_GetProcAddress(const char *proc)
 {
-    void *ret=real_SDL_GL_GetProcAddress(proc);
+    void *ret = real_SDL_GL_GetProcAddress(proc);
     if (strcmp(proc, "glShaderSource") == 0) {
-        if (!real_glShaderSource) {
+        if (!real_glShaderSource)
             real_glShaderSource = ret;
-        }
+        /* Some drivers reject mid-shader #extension directives (non-standard).
+        * Mesa uses an ad-hoc binary-name workaround; we sanitize instead. */
         return (void *)my_glShaderSource;
-        /*
-        Some drivers do not like the game's usage of mid-shader #extension directives as it's non-standard (mesa uses an ad-hoc workaround by looking at the binary name),
-        so we pass shaders through a sanitizer before
-        */
     }
     return ret;
 }
 
-
-#include <sys/mman.h>
-
-static void *vib_this = NULL;
-static SDL_mutex *vib_lock = NULL;
+/* ── Vibration patches ──
+*
+* cinput_manager_posix stubs out vibration entirely.
+* We patch three functions:
+*   allow_option_vibration @ 0xd43b80 — always return true
+*   activate_vibration     @ 0xd43b20 — redirect to SDL_GameControllerRumble
+*   deactivate_vibration   @ 0xd43900 — redirect to stop rumble
+*/
 
 static void patch_write(void *dst, void *src, size_t len)
 {
@@ -609,69 +901,61 @@ static void patch_nop(void *dst, size_t len)
 
 static void my_activate_vibration(void *this)
 {
-    float cam_left  = *(float *)((char *)this + 0x5f0);
-    float cam_right = *(float *)((char *)this + 0x5f4);
-    float game_left = *(float *)((char *)this + 0x5f8);
+    float cam_left   = *(float *)((char *)this + 0x5f0);
+    float cam_right  = *(float *)((char *)this + 0x5f4);
+    float game_left  = *(float *)((char *)this + 0x5f8);
     float game_right = *(float *)((char *)this + 0x5fc);
-    float koef      = *(float *)((char *)this + 0x600);
+    float koef       = *(float *)((char *)this + 0x600);
 
     float left  = (cam_left  + game_left)  * koef;
     float right = (cam_right + game_right) * koef;
 
+    if (left  < 0.0f) left  = 0.0f;
+    if (right < 0.0f) right = 0.0f;
     if (left  > 1.0f) left  = 1.0f;
     if (right > 1.0f) right = 1.0f;
 
     joy_lock_acquire();
     for (int i = 0; i < MAX_JOYSTICKS; i++) {
-        if (joy_table[i].gc) {
+        if (joy_table[i].gc)
             jump_table.SDL_GameControllerRumble(joy_table[i].gc,
                                                 (Uint16)(left  * 65535.0f),
                                                 (Uint16)(right * 65535.0f),
-                                                100000);
-        }
+                                                1000);
     }
     joy_lock_release();
 }
 
-/* our replacement deactivate_vibration */
 static void my_deactivate_vibration(void *this)
 {
     joy_lock_acquire();
     for (int i = 0; i < MAX_JOYSTICKS; i++) {
         if (joy_table[i].gc)
-          jump_table.SDL_GameControllerRumble(joy_table[i].gc, 0, 0, 0);
+            jump_table.SDL_GameControllerRumble(joy_table[i].gc, 0, 0, 0);
     }
     joy_lock_release();
 }
 
 static void apply_vibration_patches(void)
 {
-    /* force allow_option_vibration to always return 1 —
-     * patch: mov al, 1; ret  (3 bytes) over the existing mov al, [this+0x5dc]; ret */
+    /* allow_option_vibration: mov al, 1; ret */
     static const uint8_t always_true[] = { 0xb0, 0x01, 0xc3 };
     patch_write((void *)0xd43b80, (void *)always_true, sizeof always_true);
 
-    /* redirect activate_vibration (posix) to our implementation
-     * patch: mov rax, imm64; jmp rax  (12 bytes) */
-    uint8_t jmp_activate[12] = {
-        0x48, 0xb8,                          /* mov rax, ... */
-        0,0,0,0,0,0,0,0,                     /* imm64 placeholder */
-        0xff, 0xe0                            /* jmp rax */
-    };
+    /* activate_vibration: mov rax, imm64; jmp rax */
+    uint8_t jmp_activate[12] = { 0x48, 0xb8, 0,0,0,0,0,0,0,0, 0xff, 0xe0 };
     *(uintptr_t *)(jmp_activate + 2) = (uintptr_t)my_activate_vibration;
     patch_write((void *)0xd43b20, jmp_activate, sizeof jmp_activate);
 
-    /* redirect deactivate_vibration (posix override at 0xd43900) */
-    uint8_t jmp_deactivate[12] = {
-        0x48, 0xb8,
-        0,0,0,0,0,0,0,0,
-        0xff, 0xe0
-    };
+    /* deactivate_vibration (posix override): mov rax, imm64; jmp rax */
+    uint8_t jmp_deactivate[12] = { 0x48, 0xb8, 0,0,0,0,0,0,0,0, 0xff, 0xe0 };
     *(uintptr_t *)(jmp_deactivate + 2) = (uintptr_t)my_deactivate_vibration;
     patch_write((void *)0xd43900, jmp_deactivate, sizeof jmp_deactivate);
 
     DEBUGLOG("[sdl-hook] vibration patches applied");
 }
+
+/* ── Jump table wrappers (generated) ── */
 
 #define SDL_DYNAPI_PROC(rc, fn, params, args, ret) \
 static rc wrapper_##fn params { \
@@ -686,6 +970,8 @@ static rc wrapper_##fn params { \
 }
 #include "SDL_dynapi_procs.h"
 #undef SDL_DYNAPI_PROC
+
+/* ── Entry point ── */
 
 static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
 {
@@ -718,13 +1004,20 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
 
     apply_vibration_patches();
 
+    /* resolution override */
+    const char *res = getenv("METRO_RESOLUTION_OVERRIDE");
+    if (res) {
+        sscanf(res, "%dx%d", &override_w, &override_h);
+        LOG_FPRINTF(stderr, "[sdl-hook] logical resolution override: %dx%d\n", override_w, override_h);
+    }
+
     /* SDL_Init */
     realSDL_Init        = jump_table.SDL_Init;
     jump_table.SDL_Init = my_SDL_Init;
 
     /* Window management */
-    real_SDL_CreateWindow        = jump_table.SDL_CreateWindow;
-    jump_table.SDL_CreateWindow  = my_SDL_CreateWindow;
+    real_SDL_CreateWindow       = jump_table.SDL_CreateWindow;
+    jump_table.SDL_CreateWindow = my_SDL_CreateWindow;
 
     /* GL context management */
     realSDL_GL_CreateContext        = jump_table.SDL_GL_CreateContext;
@@ -748,11 +1041,10 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     jump_table.SDL_CreateThread = my_SDL_CreateThread;
 
     /* Event pump */
-    real_SDL_PollEvent        = jump_table.SDL_PollEvent;
-    jump_table.SDL_PollEvent  = my_SDL_PollEvent;
+    real_SDL_PollEvent       = jump_table.SDL_PollEvent;
+    jump_table.SDL_PollEvent = my_SDL_PollEvent;
 
     /* Joystick → GameController remapping */
-
     real_SDL_NumJoysticks              = jump_table.SDL_NumJoysticks;
     jump_table.SDL_NumJoysticks        = my_SDL_NumJoysticks;
     jump_table.SDL_JoystickOpen        = my_SDL_JoystickOpen;
@@ -767,10 +1059,25 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     jump_table.SDL_JoystickGetButton   = my_SDL_JoystickGetButton;
     jump_table.SDL_JoystickGetHat      = my_SDL_JoystickGetHat;
 
-    jump_table.SDL_GetRelativeMouseState = (void*)my_SDL_GetRelativeMouseState; //4A broke the ABI
+    /* 4A broke the ABI — GetRelativeMouseState has an extra z parameter */
+    real_SDL_GetRelativeMouseState       = jump_table.SDL_GetRelativeMouseState;
+    jump_table.SDL_GetRelativeMouseState = (void *)my_SDL_GetRelativeMouseState;
 
-    real_SDL_GL_GetProcAddress = jump_table.SDL_GL_GetProcAddress;
-    jump_table.SDL_GL_GetProcAddress = my_SDL_GL_GetProcAddress;
+    /* GL proc address (shader sanitizer) */
+    real_SDL_GL_GetProcAddress        = jump_table.SDL_GL_GetProcAddress;
+    jump_table.SDL_GL_GetProcAddress  = my_SDL_GL_GetProcAddress;
+
+    /* Display bounds override */
+    real_SDL_GetDisplayBounds        = jump_table.SDL_GetDisplayBounds;
+    jump_table.SDL_GetDisplayBounds  = my_SDL_GetDisplayBounds;
+
+    realSDL_GetWindowSize      = jump_table.SDL_GetWindowSize;
+    jump_table.SDL_GetWindowSize  = my_SDL_GetWindowSize;
+
+    realSDL_SetWindowFullscreen=jump_table.SDL_SetWindowFullscreen;
+    jump_table.SDL_SetWindowFullscreen=my_SDL_SetWindowFullscreen;
+
+    jump_table.SDL_SetWindowSize=my_SDL_SetWindowSize;
 
     if (output_jump_table != &jump_table)
         jump_table.SDL_memcpy(output_jump_table, &jump_table, tablesize);
