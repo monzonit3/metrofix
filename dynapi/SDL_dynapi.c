@@ -936,6 +936,26 @@ static void my_deactivate_vibration(void *this)
     joy_lock_release();
 }
 
+static void my_set_vibration_game(void *this, float left, float right)
+{
+    *(float *)((char *)this + 0x5f8) = left;
+    *(float *)((char *)this + 0x5fc) = right;
+    my_activate_vibration(this);
+}
+
+static void my_set_vibration_camera(void *this, float left, float right)
+{
+    *(float *)((char *)this + 0x5f0) = left;
+    *(float *)((char *)this + 0x5f4) = right;
+    my_activate_vibration(this);
+}
+
+static void my_set_vibration_koef(void *this, float koef)
+{
+    *(float *)((char *)this + 0x600) = koef;
+    my_activate_vibration(this);
+}
+
 static void apply_vibration_patches(void)
 {
     /* allow_option_vibration: mov al, 1; ret */
@@ -951,6 +971,18 @@ static void apply_vibration_patches(void)
     uint8_t jmp_deactivate[12] = { 0x48, 0xb8, 0,0,0,0,0,0,0,0, 0xff, 0xe0 };
     *(uintptr_t *)(jmp_deactivate + 2) = (uintptr_t)my_deactivate_vibration;
     patch_write((void *)0xd43900, jmp_deactivate, sizeof jmp_deactivate);
+
+    uint8_t jmp_set_game[12] = { 0x48, 0xb8, 0,0,0,0,0,0,0,0, 0xff, 0xe0 };
+    *(uintptr_t *)(jmp_set_game + 2) = (uintptr_t)my_set_vibration_game;
+    patch_write((void *)0xd43ab0, jmp_set_game, sizeof jmp_set_game);
+
+    uint8_t jmp_set_camera[12] = { 0x48, 0xb8, 0,0,0,0,0,0,0,0, 0xff, 0xe0 };
+    *(uintptr_t *)(jmp_set_camera + 2) = (uintptr_t)my_set_vibration_camera;
+    patch_write((void *)0xd43a90, jmp_set_camera, sizeof jmp_set_camera);
+
+    uint8_t jmp_koef[12] = { 0x48, 0xb8, 0,0,0,0,0,0,0,0, 0xff, 0xe0 };
+    *(uintptr_t *)(jmp_koef + 2) = (uintptr_t)my_set_vibration_koef;
+    patch_write((void *)0xd43ae0, jmp_koef, sizeof jmp_koef);
 
     DEBUGLOG("[sdl-hook] vibration patches applied");
 }
