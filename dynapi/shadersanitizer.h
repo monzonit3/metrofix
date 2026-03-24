@@ -317,17 +317,6 @@ static char *join_source(GLsizei count, const GLchar *const *strings,
  * ------------------------------------------------------------------------- */
 static PFNGLSHADERSOURCEPROC real_glShaderSource = NULL;
 
-static void resolve_real_glShaderSource(void)
-{
-    if (real_glShaderSource) return;
-    real_glShaderSource =
-    (PFNGLSHADERSOURCEPROC)dlsym(RTLD_NEXT, "glShaderSource");
-    if (!real_glShaderSource)
-        fprintf(stderr,
-                "[glshader_sanitize] WARNING: could not resolve "
-                "glShaderSource via RTLD_NEXT\n");
-}
-
 /* -------------------------------------------------------------------------
  * Shared implementation called from all intercept points
  * ------------------------------------------------------------------------- */
@@ -335,9 +324,6 @@ static void my_glShaderSource(GLuint shader, GLsizei count,
                                const GLchar *const *strings,
                                const GLint *length)
 {
-    resolve_real_glShaderSource();
-    if (!real_glShaderSource) return;
-
     size_t src_len = 0;
     char  *joined  = join_source(count, strings, length, &src_len);
     if (!joined) {
