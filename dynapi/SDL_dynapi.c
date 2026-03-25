@@ -83,23 +83,23 @@ static EGLSeat *seat_acquire(void)
 
 /* ── GL surface / swap ── */
 
-static int (*realSDL_GL_MakeCurrent)(SDL_Window *, SDL_GLContext) = NULL;
+static int (*real_SDL_GL_MakeCurrent)(SDL_Window *, SDL_GLContext) = NULL;
 
 static int my_SDL_GL_MakeCurrent(SDL_Window *window, SDL_GLContext context)
 {
     spoof_window = window;
     EGLSeat *seat = seat_acquire();
-    if (seat && realSDL_GL_MakeCurrent(seat->window, context) == 0)
+    if (seat && real_SDL_GL_MakeCurrent(seat->window, context) == 0)
         return 0;
-    return realSDL_GL_MakeCurrent(window, context);
+    return real_SDL_GL_MakeCurrent(window, context);
 }
 
-static SDL_Window *(*realSDL_GL_GetCurrentWindow)(void) = NULL;
+static SDL_Window *(*real_SDL_GL_GetCurrentWindow)(void) = NULL;
 static SDL_Window *my_SDL_GL_GetCurrentWindow(void) { return spoof_window; }
 
 /* ── Init ── */
 
-static int (*realSDL_Init)(Uint32) = NULL;
+static int (*real_SDL_Init)(Uint32) = NULL;
 static int my_SDL_Init(Uint32 flags)
 {
     static int alreadydone = 0;
@@ -109,7 +109,7 @@ static int my_SDL_Init(Uint32 flags)
             jump_table.SDL_RWFromFile("gamecontrollerdb.txt", "rb"), 1);
         jump_table.SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
     }
-    return realSDL_Init(flags);
+    return real_SDL_Init(flags);
 }
 
 /* ── Resolution override ── */
@@ -149,40 +149,34 @@ static SDL_Window *my_SDL_CreateWindow(const char *title,
             egl_seats[i].occupied = 0;
         }
     }
-
-    /* game was told display is override_w x override_h — create window at
-     * real monitor size so we have pixels to scale into */
-    if (override_w > 0 && override_h > 0 && w == override_w && h == override_h && (flags&(SDL_WINDOW_FULLSCREEN|SDL_WINDOW_FULLSCREEN_DESKTOP))!=0 ) {
-        SDL_Rect real_bounds = {0};
-        real_SDL_GetDisplayBounds(0, &real_bounds);
-        LOG_FPRINTF(stderr, "[sdl-hook] CreateWindow: overriding %dx%d -> %dx%d\n",
-                    w, h, real_bounds.w, real_bounds.h);
-        w = real_bounds.w;
-        h = real_bounds.h;
+    if((flags&(SDL_WINDOW_FULLSCREEN|SDL_WINDOW_FULLSCREEN_DESKTOP))!=0){
         is_fullscreen=1;
-    }
-    if((flags&SDL_WINDOW_FULLSCREEN)!=0){
         flags&=~SDL_WINDOW_FULLSCREEN;
         flags|=SDL_WINDOW_FULLSCREEN_DESKTOP;
     }
     return real_SDL_CreateWindow(title, x, y, w, h, flags);
 }
-static void (*realSDL_GetWindowSize)(SDL_Window * window, int *w,int *h);
+static void (*real_SDL_GetWindowSize)(SDL_Window * window, int *w,int *h);
 static void my_SDL_GetWindowSize(SDL_Window * window, int *w,int *h){
     if (override_w > 0 && override_h > 0 && is_fullscreen){
         *w=override_w;
         *h=override_h;
     }
     else{
-        realSDL_GetWindowSize(window,w,h);
+        real_SDL_GetWindowSize(window,w,h);
     }
 }
 
-static void my_SDL_SetWindowSize(SDL_Window * window, int w,int h){}
+static void (*real_SDL_SetWindowSize)(SDL_Window * window, int w,int h);
+static void my_SDL_SetWindowSize(SDL_Window * window, int w,int h){
+    if (!is_fullscreen){
+        real_SDL_SetWindowSize(window,w,h);
+    }
+}
 
 /* ── GL context management ── */
 
-static SDL_GLContext (*realSDL_GL_CreateContext)(SDL_Window *) = NULL;
+static SDL_GLContext (*real_SDL_GL_CreateContext)(SDL_Window *) = NULL;
 
 static SDL_GLContext my_SDL_GL_CreateContext(SDL_Window *w)
 {
@@ -196,7 +190,7 @@ static SDL_GLContext my_SDL_GL_CreateContext(SDL_Window *w)
         forced_share = 1;
     }
 
-    SDL_GLContext ctx = realSDL_GL_CreateContext(w);
+    SDL_GLContext ctx = real_SDL_GL_CreateContext(w);
 
     if (forced_share)
         jump_table.SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
@@ -218,7 +212,7 @@ static SDL_GLContext my_SDL_GL_CreateContext(SDL_Window *w)
     return ctx;
 }
 
-static void (*realSDL_GL_DeleteContext)(SDL_GLContext) = NULL;
+static void (*real_SDL_GL_DeleteContext)(SDL_GLContext) = NULL;
 
 static void my_SDL_GL_DeleteContext(SDL_GLContext ctx)
 {
@@ -230,7 +224,7 @@ static void my_SDL_GL_DeleteContext(SDL_GLContext ctx)
         DEBUGLOG("[sdl-hook] anchor GL context deleted — state cleared");
     }
     gl_unlock();
-    realSDL_GL_DeleteContext(ctx);
+    real_SDL_GL_DeleteContext(ctx);
 }
 
 /* ── Thread wrapping ── */
@@ -262,11 +256,11 @@ static int SDLCALL wrapped_thread_fn(void *arg)
     int rc = real_fn(real_userdata);
 
     jump_table.SDL_GL_MakeCurrent(window, NULL);
-    realSDL_GL_DeleteContext(shared_ctx);
+    real_SDL_GL_DeleteContext(shared_ctx);
     return rc;
 }
 
-static SDL_Thread *(*realSDL_CreateThread)(int (SDLCALL *)(void *),
+static SDL_Thread *(*real_SDL_CreateThread)(int (SDLCALL *)(void *),
                                            const char *, void *) = NULL;
 
 static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
@@ -281,7 +275,7 @@ static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
     if (!init || !win || !pctx) {
         LOG_FPRINTF(stderr, "[sdl-hook] SDL_CreateThread(\"%s\") before GL context — passing through\n",
                     name ? name : "?");
-        return realSDL_CreateThread(fn, name, data);
+        return real_SDL_CreateThread(fn, name, data);
     }
 
     SDL_GLContext caller_ctx = jump_table.SDL_GL_GetCurrentContext();
@@ -290,18 +284,18 @@ static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
     if (!caller_ctx) {
         LOG_FPRINTF(stderr, "[sdl-hook] SDL_CreateThread(\"%s\"): calling thread has no current GL context — passing through\n",
                     name ? name : "?");
-        return realSDL_CreateThread(fn, name, data);
+        return real_SDL_CreateThread(fn, name, data);
     }
 
     jump_table.SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
-    SDL_GLContext shared_ctx = realSDL_GL_CreateContext(win);
+    SDL_GLContext shared_ctx = real_SDL_GL_CreateContext(win);
     jump_table.SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
 
     if (!shared_ctx) {
         LOG_FPRINTF(stderr, "[sdl-hook] SDL_CreateThread(\"%s\"): shared context creation failed (%s) — passing through\n",
                     name ? name : "?", jump_table.SDL_GetError());
         jump_table.SDL_GL_MakeCurrent(caller_win, caller_ctx);
-        return realSDL_CreateThread(fn, name, data);
+        return real_SDL_CreateThread(fn, name, data);
     }
 
     jump_table.SDL_GL_MakeCurrent(caller_win, caller_ctx);
@@ -309,8 +303,8 @@ static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
     WrappedThreadData *wd = jump_table.SDL_malloc(sizeof *wd);
     if (!wd) {
         DEBUGLOG("[sdl-hook] OOM in SDL_CreateThread hook");
-        realSDL_GL_DeleteContext(shared_ctx);
-        return realSDL_CreateThread(fn, name, data);
+        real_SDL_GL_DeleteContext(shared_ctx);
+        return real_SDL_CreateThread(fn, name, data);
     }
 
     wd->real_fn       = fn;
@@ -321,7 +315,7 @@ static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
     LOG_FPRINTF(stderr, "[sdl-hook] SDL_CreateThread(\"%s\"): injecting shared GL ctx=%p (share group of caller ctx=%p)\n",
                 name ? name : "?", shared_ctx, caller_ctx);
 
-    return realSDL_CreateThread(wrapped_thread_fn, name, wd);
+    return real_SDL_CreateThread(wrapped_thread_fn, name, wd);
 }
 
 /* ── Joystick → Xbox 360 GameController wrapper ──
@@ -544,6 +538,15 @@ static int my_SDL_PollEvent(SDL_Event *event)
         if (ret == 0) return 0;
 
         switch (event->type) {
+            case SDL_WINDOWEVENT:
+                if (override_w > 0 && override_h > 0 && is_fullscreen) {
+                    if (event->window.event == SDL_WINDOWEVENT_RESIZED || event->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+                        event->window.data1 = override_w;
+                        event->window.data2 = override_h;
+                    }
+                }
+                break;
+
             case SDL_JOYDEVICEADDED: {
                 int idx = event->jdevice.which;
                 if (!jump_table.SDL_IsGameController(idx)) continue;
@@ -792,7 +795,7 @@ static int InitializeOpenGLScaling(int logical_w, int logical_h)
             return SDL_TRUE;
 }
 
-static void (*realSDL_GL_SwapWindow)(SDL_Window *) = NULL;
+static void (*real_SDL_GL_SwapWindow)(SDL_Window *) = NULL;
 
 static void my_SDL_GL_SwapWindow(SDL_Window *window)
 {
@@ -839,11 +842,11 @@ static void my_SDL_GL_SwapWindow(SDL_Window *window)
         }
     }
 
-    realSDL_GL_MakeCurrent(spoof_window, ctx);
-    realSDL_GL_SwapWindow(spoof_window);
+    real_SDL_GL_MakeCurrent(spoof_window, ctx);
+    real_SDL_GL_SwapWindow(spoof_window);
 }
 
-static int (*realSDL_SetWindowFullscreen)(SDL_Window * window,Uint32 flags);
+static int (*real_SDL_SetWindowFullscreen)(SDL_Window * window,Uint32 flags);
 static int my_SDL_SetWindowFullscreen(SDL_Window * window,Uint32 flags){
     if(flags!=0){
         flags=SDL_WINDOW_FULLSCREEN_DESKTOP;
@@ -852,7 +855,7 @@ static int my_SDL_SetWindowFullscreen(SDL_Window * window,Uint32 flags){
     else{
         is_fullscreen=0;
     }
-    return realSDL_SetWindowFullscreen(window,flags);
+    return real_SDL_SetWindowFullscreen(window,flags);
 }
 
 /* ── GL proc address hook (shader sanitizer + future hooks) ── */
@@ -1044,7 +1047,7 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     }
 
     /* SDL_Init */
-    realSDL_Init        = jump_table.SDL_Init;
+    real_SDL_Init        = jump_table.SDL_Init;
     jump_table.SDL_Init = my_SDL_Init;
 
     /* Window management */
@@ -1052,24 +1055,24 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     jump_table.SDL_CreateWindow = my_SDL_CreateWindow;
 
     /* GL context management */
-    realSDL_GL_CreateContext        = jump_table.SDL_GL_CreateContext;
+    real_SDL_GL_CreateContext        = jump_table.SDL_GL_CreateContext;
     jump_table.SDL_GL_CreateContext = my_SDL_GL_CreateContext;
 
-    realSDL_GL_DeleteContext        = jump_table.SDL_GL_DeleteContext;
+    real_SDL_GL_DeleteContext        = jump_table.SDL_GL_DeleteContext;
     jump_table.SDL_GL_DeleteContext = my_SDL_GL_DeleteContext;
 
     /* GL surface / swap */
-    realSDL_GL_MakeCurrent        = jump_table.SDL_GL_MakeCurrent;
+    real_SDL_GL_MakeCurrent        = jump_table.SDL_GL_MakeCurrent;
     jump_table.SDL_GL_MakeCurrent = my_SDL_GL_MakeCurrent;
 
-    realSDL_GL_GetCurrentWindow        = jump_table.SDL_GL_GetCurrentWindow;
+    real_SDL_GL_GetCurrentWindow        = jump_table.SDL_GL_GetCurrentWindow;
     jump_table.SDL_GL_GetCurrentWindow = my_SDL_GL_GetCurrentWindow;
 
-    realSDL_GL_SwapWindow        = jump_table.SDL_GL_SwapWindow;
+    real_SDL_GL_SwapWindow        = jump_table.SDL_GL_SwapWindow;
     jump_table.SDL_GL_SwapWindow = my_SDL_GL_SwapWindow;
 
     /* Thread creation */
-    realSDL_CreateThread        = jump_table.SDL_CreateThread;
+    real_SDL_CreateThread        = jump_table.SDL_CreateThread;
     jump_table.SDL_CreateThread = my_SDL_CreateThread;
 
     /* Event pump */
@@ -1103,12 +1106,13 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     real_SDL_GetDisplayBounds        = jump_table.SDL_GetDisplayBounds;
     jump_table.SDL_GetDisplayBounds  = my_SDL_GetDisplayBounds;
 
-    realSDL_GetWindowSize      = jump_table.SDL_GetWindowSize;
+    real_SDL_GetWindowSize      = jump_table.SDL_GetWindowSize;
     jump_table.SDL_GetWindowSize  = my_SDL_GetWindowSize;
 
-    realSDL_SetWindowFullscreen=jump_table.SDL_SetWindowFullscreen;
+    real_SDL_SetWindowFullscreen=jump_table.SDL_SetWindowFullscreen;
     jump_table.SDL_SetWindowFullscreen=my_SDL_SetWindowFullscreen;
 
+    real_SDL_SetWindowSize=jump_table.SDL_SetWindowSize;
     jump_table.SDL_SetWindowSize=my_SDL_SetWindowSize;
 
     if (output_jump_table != &jump_table)
