@@ -540,13 +540,21 @@ static int my_SDL_PollEvent(SDL_Event *event)
         switch (event->type) {
             case SDL_WINDOWEVENT:
                 if (override_w > 0 && override_h > 0 && is_fullscreen) {
-                    if (event->window.event == SDL_WINDOWEVENT_RESIZED || event->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                        event->window.data1 = override_w;
-                        event->window.data2 = override_h;
+                    switch (event->window.event) {
+                        case SDL_WINDOWEVENT_RESIZED:
+                        case SDL_WINDOWEVENT_SIZE_CHANGED:
+                            event->window.data1 = override_w;
+                            event->window.data2 = override_h;
+                            break;
+                        case SDL_WINDOWEVENT_FOCUS_LOST:
+                        case SDL_WINDOWEVENT_FOCUS_GAINED:
+                        case SDL_WINDOWEVENT_RESTORED:
+                        case SDL_WINDOWEVENT_MAXIMIZED:
+                        case SDL_WINDOWEVENT_MINIMIZED:
+                            continue; /* swallow it entirely */
                     }
                 }
                 break;
-
             case SDL_JOYDEVICEADDED: {
                 int idx = event->jdevice.which;
                 if (!jump_table.SDL_IsGameController(idx)) continue;
