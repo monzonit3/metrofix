@@ -312,14 +312,8 @@ static char *join_source(GLsizei count, const GLchar *const *strings,
     return buf;
 }
 
-/* -------------------------------------------------------------------------
- * Real glShaderSource pointer – resolved lazily on first call
- * ------------------------------------------------------------------------- */
 static PFNGLSHADERSOURCEPROC real_glShaderSource = NULL;
 
-/* -------------------------------------------------------------------------
- * Shared implementation called from all intercept points
- * ------------------------------------------------------------------------- */
 static void my_glShaderSource(GLuint shader, GLsizei count,
                                const GLchar *const *strings,
                                const GLint *length)

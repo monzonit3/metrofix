@@ -1,5 +1,3 @@
-#include <SDL2/SDL_thread.h>
-#include <SDL2/SDL_video.h>
 #define SDL_DYNAMIC_API_ENVVAR "SDL_DYNAMIC_API"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
@@ -82,6 +80,8 @@ static EGLSeat *seat_acquire(void)
 }
 
 /* ── GL surface / swap ── */
+
+static int (*real_SDL_GL_SetAttribute)(SDL_GLattr attr, int value);
 
 static int (*real_SDL_GL_MakeCurrent)(SDL_Window *, SDL_GLContext) = NULL;
 
@@ -186,14 +186,14 @@ static SDL_GLContext my_SDL_GL_CreateContext(SDL_Window *w)
 
     int forced_share = 0;
     if (already_have_ctx && jump_table.SDL_GL_GetCurrentContext() != NULL) {
-        jump_table.SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
+        real_SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
         forced_share = 1;
     }
 
     SDL_GLContext ctx = real_SDL_GL_CreateContext(w);
 
     if (forced_share)
-        jump_table.SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
+        real_SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
 
     if (ctx) {
         gl_lock();
@@ -287,9 +287,9 @@ static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
         return real_SDL_CreateThread(fn, name, data);
     }
 
-    jump_table.SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
+    real_SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
     SDL_GLContext shared_ctx = real_SDL_GL_CreateContext(win);
-    jump_table.SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
+    real_SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
 
     if (!shared_ctx) {
         LOG_FPRINTF(stderr, "[sdl-hook] SDL_CreateThread(\"%s\"): shared context creation failed (%s) — passing through\n",
@@ -858,6 +858,15 @@ static int my_SDL_SetWindowFullscreen(SDL_Window * window,Uint32 flags){
     return real_SDL_SetWindowFullscreen(window,flags);
 }
 
+static int my_SDL_GL_SetAttribute(SDL_GLattr attr, int value){
+    if(attr==SDL_GL_ACCELERATED_VISUAL) return 0;
+    return real_SDL_GL_SetAttribute(attr,value);
+}
+
+static SDL_bool my_SDL_GetWindowWMInfo(SDL_Window * window,SDL_SysWMinfo * info){
+    return SDL_FALSE;
+}
+
 /* ── GL proc address hook (shader sanitizer + future hooks) ── */
 
 #include "shadersanitizer.h"
@@ -877,14 +886,7 @@ static void *my_SDL_GL_GetProcAddress(const char *proc)
     return ret;
 }
 
-/* ── Vibration patches ──
-*
-* cinput_manager_posix stubs out vibration entirely.
-* We patch three functions:
-*   allow_option_vibration @ 0xd43b80 — always return true
-*   activate_vibration     @ 0xd43b20 — redirect to SDL_GameControllerRumble
-*   deactivate_vibration   @ 0xd43900 — redirect to stop rumble
-*/
+/* ── Vibration patches ──*/
 
 static void patch_write(void *dst, void *src, size_t len)
 {
@@ -1097,6 +1099,12 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     /* 4A broke the ABI — GetRelativeMouseState has an extra z parameter */
     real_SDL_GetRelativeMouseState       = jump_table.SDL_GetRelativeMouseState;
     jump_table.SDL_GetRelativeMouseState = (void *)my_SDL_GetRelativeMouseState;
+
+
+    real_SDL_GL_SetAttribute=jump_table.SDL_GL_SetAttribute;
+    jump_table.SDL_GL_SetAttribute=my_SDL_GL_SetAttribute;
+
+    jump_table.SDL_GetWindowWMInfo=my_SDL_GetWindowWMInfo;
 
     /* GL proc address (shader sanitizer) */
     real_SDL_GL_GetProcAddress        = jump_table.SDL_GL_GetProcAddress;
