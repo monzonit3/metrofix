@@ -201,11 +201,11 @@ static SDL_GLContext my_SDL_GL_CreateContext(SDL_Window *w)
             gl_primary.window      = w;
             gl_primary.context     = ctx;
             gl_primary.initialized = 1;
-            LOG_FPRINTF(stderr, "[sdl-hook] primary GL context recorded (anchor): win=%p ctx=%p\n", (void *)w, ctx);
+            LOG_FPRINTF(stderr, "[hook] primary GL context recorded (anchor): win=%p ctx=%p\n", (void *)w, ctx);
         } else {
             gl_primary.window  = w;
             gl_primary.context = ctx;
-            LOG_FPRINTF(stderr, "[sdl-hook] additional GL context forced into share group: win=%p ctx=%p\n", (void *)w, ctx);
+            LOG_FPRINTF(stderr, "[hook] additional GL context forced into share group: win=%p ctx=%p\n", (void *)w, ctx);
         }
         gl_unlock();
     }
@@ -221,7 +221,7 @@ static void my_SDL_GL_DeleteContext(SDL_GLContext ctx)
         gl_primary.window      = NULL;
         gl_primary.context     = NULL;
         gl_primary.initialized = 0;
-        DEBUGLOG("[sdl-hook] anchor GL context deleted — state cleared");
+        DEBUGLOG("[hook] anchor GL context deleted — state cleared");
     }
     gl_unlock();
     real_SDL_GL_DeleteContext(ctx);
@@ -246,10 +246,10 @@ static int SDLCALL wrapped_thread_fn(void *arg)
     jump_table.SDL_free(d);
 
     if (jump_table.SDL_GL_MakeCurrent(window, shared_ctx) != 0) {
-        LOG_FPRINTF(stderr, "[sdl-hook] SDL_GL_MakeCurrent failed on thread: %s\n",
+        LOG_FPRINTF(stderr, "[hook] SDL_GL_MakeCurrent failed on thread: %s\n",
                     jump_table.SDL_GetError());
     } else {
-        LOG_FPRINTF(stderr, "[sdl-hook] shared GL context current on thread: win=%p ctx=%p\n",
+        LOG_FPRINTF(stderr, "[hook] shared GL context current on thread: win=%p ctx=%p\n",
                     (void *)window, shared_ctx);
     }
 
@@ -273,7 +273,7 @@ static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
     gl_unlock();
 
     if (!init || !win || !pctx) {
-        LOG_FPRINTF(stderr, "[sdl-hook] SDL_CreateThread(\"%s\") before GL context — passing through\n",
+        LOG_FPRINTF(stderr, "[hook] SDL_CreateThread(\"%s\") before GL context — passing through\n",
                     name ? name : "?");
         return real_SDL_CreateThread(fn, name, data);
     }
@@ -282,7 +282,7 @@ static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
     SDL_Window   *caller_win = jump_table.SDL_GL_GetCurrentWindow();
 
     if (!caller_ctx) {
-        LOG_FPRINTF(stderr, "[sdl-hook] SDL_CreateThread(\"%s\"): calling thread has no current GL context — passing through\n",
+        LOG_FPRINTF(stderr, "[hook] SDL_CreateThread(\"%s\"): calling thread has no current GL context — passing through\n",
                     name ? name : "?");
         return real_SDL_CreateThread(fn, name, data);
     }
@@ -292,7 +292,7 @@ static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
     real_SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
 
     if (!shared_ctx) {
-        LOG_FPRINTF(stderr, "[sdl-hook] SDL_CreateThread(\"%s\"): shared context creation failed (%s) — passing through\n",
+        LOG_FPRINTF(stderr, "[hook] SDL_CreateThread(\"%s\"): shared context creation failed (%s) — passing through\n",
                     name ? name : "?", jump_table.SDL_GetError());
         jump_table.SDL_GL_MakeCurrent(caller_win, caller_ctx);
         return real_SDL_CreateThread(fn, name, data);
@@ -302,7 +302,7 @@ static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
 
     WrappedThreadData *wd = jump_table.SDL_malloc(sizeof *wd);
     if (!wd) {
-        DEBUGLOG("[sdl-hook] OOM in SDL_CreateThread hook");
+        DEBUGLOG("[hook] OOM in SDL_CreateThread hook");
         real_SDL_GL_DeleteContext(shared_ctx);
         return real_SDL_CreateThread(fn, name, data);
     }
@@ -312,7 +312,7 @@ static SDL_Thread *my_SDL_CreateThread(int (SDLCALL *fn)(void *),
     wd->window        = win;
     wd->shared_ctx    = shared_ctx;
 
-    LOG_FPRINTF(stderr, "[sdl-hook] SDL_CreateThread(\"%s\"): injecting shared GL ctx=%p (share group of caller ctx=%p)\n",
+    LOG_FPRINTF(stderr, "[hook] SDL_CreateThread(\"%s\"): injecting shared GL ctx=%p (share group of caller ctx=%p)\n",
                 name ? name : "?", shared_ctx, caller_ctx);
 
     return real_SDL_CreateThread(wrapped_thread_fn, name, wd);
@@ -369,7 +369,7 @@ static SDL_Joystick *my_SDL_JoystickOpen(int device_index)
             joy_table[i].joy          = real_joy;
             joy_table[i].gc           = gc;
             joy_table[i].device_index = device_index;
-            LOG_FPRINTF(stderr, "[sdl-hook] JoystickOpen(%d): gc=%p joy=%p\n",
+            LOG_FPRINTF(stderr, "[hook] JoystickOpen(%d): gc=%p joy=%p\n",
                         device_index, (void *)gc, (void *)real_joy);
             joy_lock_release();
             return real_joy;
@@ -558,7 +558,7 @@ static int my_SDL_PollEvent(SDL_Event *event)
             case SDL_JOYDEVICEADDED: {
                 int idx = event->jdevice.which;
                 if (!jump_table.SDL_IsGameController(idx)) continue;
-                LOG_FPRINTF(stderr, "[sdl-hook] hotplug ADDED: idx=%d\n", idx);
+                LOG_FPRINTF(stderr, "[hook] hotplug ADDED: idx=%d\n", idx);
                 break; /* game will call JoystickOpen itself */
             }
 
@@ -568,7 +568,7 @@ static int my_SDL_PollEvent(SDL_Event *event)
                 for (int i = 0; i < MAX_JOYSTICKS; i++) {
                     if (joy_table[i].joy &&
                         jump_table.SDL_JoystickInstanceID(joy_table[i].joy) == iid) {
-                        LOG_FPRINTF(stderr, "[sdl-hook] hotplug REMOVED: iid=%d gc=%p\n",
+                        LOG_FPRINTF(stderr, "[hook] hotplug REMOVED: iid=%d gc=%p\n",
                                     iid, (void *)joy_table[i].gc);
                         if (joy_table[i].gc) {
                             jump_table.SDL_GameControllerClose(joy_table[i].gc);
@@ -787,7 +787,7 @@ static int InitializeOpenGLScaling(int logical_w, int logical_h)
         my_glDeleteRenderbuffers(1, &OpenGLLogicalScalingDepth);
         my_glDeleteFramebuffers(1, &OpenGLLogicalScalingFBO);
         OpenGLLogicalScalingFBO = OpenGLLogicalScalingColor = OpenGLLogicalScalingDepth = 0;
-        DEBUGLOG("[sdl-hook] scaling FBO incomplete — scaling disabled");
+        DEBUGLOG("[hook] scaling FBO incomplete — scaling disabled");
         return SDL_FALSE;
             }
 
@@ -799,7 +799,7 @@ static int InitializeOpenGLScaling(int logical_w, int logical_h)
             OpenGLLogicalScalingWidth   = logical_w;
             OpenGLLogicalScalingHeight  = logical_h;
             scaling_context_initialized = 1;
-            LOG_FPRINTF(stderr, "[sdl-hook] scaling FBO initialized: %dx%d\n", logical_w, logical_h);
+            LOG_FPRINTF(stderr, "[hook] scaling FBO initialized: %dx%d\n", logical_w, logical_h);
             return SDL_TRUE;
 }
 
@@ -875,9 +875,131 @@ static SDL_bool my_SDL_GetWindowWMInfo(SDL_Window * window,SDL_SysWMinfo * info)
     return SDL_FALSE;
 }
 
-/* ── GL proc address hook (shader sanitizer + future hooks) ── */
+/* ── GL proc address hook (shader fix + future hooks) ── */
 
-#include "shadersanitizer.h"
+typedef void (*PFNGLSHADERSOURCEPROC)(unsigned int shader, int count, const char* const* string, const int* length);
+static PFNGLSHADERSOURCEPROC real_glShaderSource = NULL;
+
+static const char* FIXED_SHADER_440 =
+"#version 400\n"
+"#ifdef GL_ARB_conservative_depth\n"
+"#extension GL_ARB_conservative_depth : enable\n"
+"#endif\n"
+"struct vec1 {\n"
+"	float x;\n"
+"};\n"
+"struct uvec1 {\n"
+"	uint x;\n"
+"};\n"
+"struct ivec1 {\n"
+"	int x;\n"
+"};\n"
+"subroutine void SubroutineType();\n"
+"layout(std140) uniform;\n"
+"layout(location = 0) out  vec4 PixOutput0;\n"
+"#define Output0 PixOutput0\n"
+"#ifdef GL_ARB_conservative_depth\n"
+"layout (depth_greater) out float gl_FragDepth;\n"
+"#endif\n"
+"void main()\n"
+"{\n"
+"    Output0 = vec4(vec4(1.00000000000, 1.00000000000, 1.00000000000, 1.00000000000)).xyzw;\n"
+"    gl_FragDepth = vec4(1.00000000000).x;\n"
+"    return;\n"
+"}\n";
+
+static const char broken_shader[] = {
+    0x23, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x20, 0x34, 0x30, 0x30,
+    0x0a, 0x73, 0x74, 0x72, 0x75, 0x63, 0x74, 0x20, 0x76, 0x65, 0x63, 0x31,
+    0x20, 0x7b, 0x0a, 0x09, 0x66, 0x6c, 0x6f, 0x61, 0x74, 0x20, 0x78, 0x3b,
+    0x0a, 0x7d, 0x3b, 0x0a, 0x73, 0x74, 0x72, 0x75, 0x63, 0x74, 0x20, 0x75,
+    0x76, 0x65, 0x63, 0x31, 0x20, 0x7b, 0x0a, 0x09, 0x75, 0x69, 0x6e, 0x74,
+    0x20, 0x78, 0x3b, 0x0a, 0x7d, 0x3b, 0x0a, 0x73, 0x74, 0x72, 0x75, 0x63,
+    0x74, 0x20, 0x69, 0x76, 0x65, 0x63, 0x31, 0x20, 0x7b, 0x0a, 0x09, 0x69,
+    0x6e, 0x74, 0x20, 0x78, 0x3b, 0x0a, 0x7d, 0x3b, 0x0a, 0x73, 0x75, 0x62,
+    0x72, 0x6f, 0x75, 0x74, 0x69, 0x6e, 0x65, 0x20, 0x76, 0x6f, 0x69, 0x64,
+    0x20, 0x53, 0x75, 0x62, 0x72, 0x6f, 0x75, 0x74, 0x69, 0x6e, 0x65, 0x54,
+    0x79, 0x70, 0x65, 0x28, 0x29, 0x3b, 0x0a, 0x6c, 0x61, 0x79, 0x6f, 0x75,
+    0x74, 0x28, 0x73, 0x74, 0x64, 0x31, 0x34, 0x30, 0x29, 0x20, 0x75, 0x6e,
+    0x69, 0x66, 0x6f, 0x72, 0x6d, 0x3b, 0x0a, 0x6c, 0x61, 0x79, 0x6f, 0x75,
+    0x74, 0x28, 0x6c, 0x6f, 0x63, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x20, 0x3d,
+    0x20, 0x30, 0x29, 0x20, 0x6f, 0x75, 0x74, 0x20, 0x20, 0x76, 0x65, 0x63,
+    0x34, 0x20, 0x50, 0x69, 0x78, 0x4f, 0x75, 0x74, 0x70, 0x75, 0x74, 0x30,
+    0x3b, 0x0a, 0x23, 0x64, 0x65, 0x66, 0x69, 0x6e, 0x65, 0x20, 0x4f, 0x75,
+    0x74, 0x70, 0x75, 0x74, 0x30, 0x20, 0x50, 0x69, 0x78, 0x4f, 0x75, 0x74,
+    0x70, 0x75, 0x74, 0x30, 0x0a, 0x23, 0x69, 0x66, 0x64, 0x65, 0x66, 0x20,
+    0x47, 0x4c, 0x5f, 0x41, 0x52, 0x42, 0x5f, 0x63, 0x6f, 0x6e, 0x73, 0x65,
+    0x72, 0x76, 0x61, 0x74, 0x69, 0x76, 0x65, 0x5f, 0x64, 0x65, 0x70, 0x74,
+    0x68, 0x0a, 0x23, 0x65, 0x78, 0x74, 0x65, 0x6e, 0x73, 0x69, 0x6f, 0x6e,
+    0x20, 0x47, 0x4c, 0x5f, 0x41, 0x52, 0x42, 0x5f, 0x63, 0x6f, 0x6e, 0x73,
+    0x65, 0x72, 0x76, 0x61, 0x74, 0x69, 0x76, 0x65, 0x5f, 0x64, 0x65, 0x70,
+    0x74, 0x68, 0x20, 0x3a, 0x20, 0x65, 0x6e, 0x61, 0x62, 0x6c, 0x65, 0x0a,
+    0x6c, 0x61, 0x79, 0x6f, 0x75, 0x74, 0x20, 0x28, 0x64, 0x65, 0x70, 0x74,
+    0x68, 0x5f, 0x67, 0x72, 0x65, 0x61, 0x74, 0x65, 0x72, 0x29, 0x20, 0x6f,
+    0x75, 0x74, 0x20, 0x66, 0x6c, 0x6f, 0x61, 0x74, 0x20, 0x67, 0x6c, 0x5f,
+    0x46, 0x72, 0x61, 0x67, 0x44, 0x65, 0x70, 0x74, 0x68, 0x3b, 0x0a, 0x23,
+    0x65, 0x6e, 0x64, 0x69, 0x66, 0x0a, 0x76, 0x6f, 0x69, 0x64, 0x20, 0x6d,
+    0x61, 0x69, 0x6e, 0x28, 0x29, 0x0a, 0x7b, 0x0a, 0x20, 0x20, 0x20, 0x20,
+    0x4f, 0x75, 0x74, 0x70, 0x75, 0x74, 0x30, 0x20, 0x3d, 0x20, 0x76, 0x65,
+    0x63, 0x34, 0x28, 0x76, 0x65, 0x63, 0x34, 0x28, 0x31, 0x2e, 0x30, 0x30,
+    0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x2c, 0x20, 0x31,
+    0x2e, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+    0x2c, 0x20, 0x31, 0x2e, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+    0x30, 0x30, 0x30, 0x2c, 0x20, 0x31, 0x2e, 0x30, 0x30, 0x30, 0x30, 0x30,
+    0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x29, 0x29, 0x2e, 0x78, 0x79, 0x7a,
+    0x77, 0x3b, 0x0a, 0x20, 0x20, 0x20, 0x20, 0x67, 0x6c, 0x5f, 0x46, 0x72,
+    0x61, 0x67, 0x44, 0x65, 0x70, 0x74, 0x68, 0x20, 0x3d, 0x20, 0x76, 0x65,
+    0x63, 0x34, 0x28, 0x31, 0x2e, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+    0x30, 0x30, 0x30, 0x30, 0x29, 0x2e, 0x78, 0x3b, 0x0a, 0x20, 0x20, 0x20,
+    0x20, 0x72, 0x65, 0x74, 0x75, 0x72, 0x6e, 0x3b, 0x0a, 0x7d, 0x0a, 0x00
+};
+
+static uint32_t crc32(const char *s, size_t n) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < n; i++) {
+        crc ^= (uint8_t)s[i];
+        for (int j = 0; j < 8; j++) {
+            crc = (crc >> 1) ^ (0xEDB88320 & (-(crc & 1)));
+        }
+    }
+    return ~crc;
+}
+
+static const uint32_t TARGET_CRC = 0xbc1e25da;
+
+static void my_glShaderSource(unsigned int shader, int count, const char* const* string, const int* length) {
+    /* Join the strings to check the full source */
+    size_t total_len = 0;
+    for (int i = 0; i < count; i++) {
+        total_len += (length && length[i] >= 0) ? length[i] : strlen(string[i]);
+    }
+
+    char *full_src = malloc(total_len + 1);
+    if (full_src) {
+        size_t offset = 0;
+        for (int i = 0; i < count; i++) {
+            size_t len = (length && length[i] >= 0) ? length[i] : strlen(string[i]);
+            memcpy(full_src + offset, string[i], len);
+            offset += len;
+        }
+        full_src[total_len] = '\0';
+
+        uint32_t curr_crc=crc32(full_src, total_len);
+        //DEBUGLOG(full_src);
+        LOG_FPRINTF(stderr,"[hook] Current shader crc: %08x\n",curr_crc);
+        if (curr_crc == TARGET_CRC) {
+            if (strcmp(full_src, broken_shader)==0) {
+                DEBUGLOG("[hook] Fixing offending shader 440...");
+                real_glShaderSource(shader, 1, &FIXED_SHADER_440, NULL);
+                free(full_src);
+                return;
+            }
+        }
+        free(full_src);
+    }
+
+    real_glShaderSource(shader, count, string, length);
+}
 
 static void *(*real_SDL_GL_GetProcAddress)(const char *) = NULL;
 
@@ -888,7 +1010,7 @@ static void *my_SDL_GL_GetProcAddress(const char *proc)
         if (!real_glShaderSource)
             real_glShaderSource = ret;
         /* Some drivers reject mid-shader #extension directives (non-standard).
-        * Mesa uses an ad-hoc binary-name workaround; we sanitize instead. */
+        * Mesa uses an ad-hoc binary-name workaround; we fix the offending shader instead. */
         return (void *)my_glShaderSource;
     }
     return ret;
@@ -997,7 +1119,7 @@ static void apply_vibration_patches(void)
     *(uintptr_t *)(jmp_koef + 2) = (uintptr_t)my_set_vibration_koef;
     patch_write((void *)0xd43ae0, jmp_koef, sizeof jmp_koef);
 
-    DEBUGLOG("[sdl-hook] vibration patches applied");
+    DEBUGLOG("[hook] vibration patches applied");
 }
 
 /* ── Jump table wrappers (generated) ── */
@@ -1008,7 +1130,9 @@ static rc wrapper_##fn params { \
         fprintf(stderr, "Symbol %s not found.\n", "" #fn ""); \
         exit(1); \
     } \
-    if (sdl_debug_enable) { \
+    static int already_logged_call;\
+    if (sdl_debug_enable && !already_logged_call) { \
+        already_logged_call=1;\
         fprintf(stderr, "[%p] %s\n", pthread_self(), "" #fn ""); \
     } \
     ret real_jump_table.fn args; \
@@ -1028,7 +1152,7 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     void *sdlhandle = dlopen("libSDL2-2.0.so.0", RTLD_LOCAL | RTLD_NOW);
     if (!sdlhandle) { fputs("Could not load SDL2.\n", stderr); exit(1); }
 
-    if (getenv("SDL_LOG_CALLS_DEBUG")) sdl_debug_enable = 1;
+    if (getenv("METROFIX_DEBUG")) sdl_debug_enable = 1;
 
     #define SDL_DYNAPI_PROC(rc, fn, params, args, ret) \
     do { \
@@ -1039,13 +1163,13 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     #undef SDL_DYNAPI_PROC
 
     gl_primary_lock = jump_table.SDL_CreateMutex();
-    if (!gl_primary_lock) { fputs("[sdl-hook] gl_primary_lock failed\n", stderr); exit(1); }
+    if (!gl_primary_lock) { fputs("[hook] gl_primary_lock failed\n", stderr); exit(1); }
 
     egl_seat_lock = jump_table.SDL_CreateMutex();
-    if (!egl_seat_lock) { fputs("[sdl-hook] egl_seat_lock failed\n", stderr); exit(1); }
+    if (!egl_seat_lock) { fputs("[hook] egl_seat_lock failed\n", stderr); exit(1); }
 
     joy_lock = jump_table.SDL_CreateMutex();
-    if (!joy_lock) { fputs("[sdl-hook] joy_lock failed\n", stderr); exit(1); }
+    if (!joy_lock) { fputs("[hook] joy_lock failed\n", stderr); exit(1); }
 
     apply_vibration_patches();
 
@@ -1053,7 +1177,7 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table, Uint32 tablesize)
     const char *res = getenv("METRO_RESOLUTION_OVERRIDE");
     if (res) {
         sscanf(res, "%dx%d", &override_w, &override_h);
-        LOG_FPRINTF(stderr, "[sdl-hook] logical resolution override: %dx%d\n", override_w, override_h);
+        LOG_FPRINTF(stderr, "[hook] logical resolution override: %dx%d\n", override_w, override_h);
     }
 
     /* SDL_Init */
