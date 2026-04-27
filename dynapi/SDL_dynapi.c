@@ -1,27 +1,29 @@
+#include <GL/gl.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
+#include <SDL2/SDL_video.h>
 #include <SDL2/SDL_vulkan.h>
-#include <unistd.h>
-#include <GL/gl.h>
 #include <dlfcn.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 #define SDL_DYNAMIC_API_ENVVAR "SDL_DYNAMIC_API"
 
-static int sdl_debug_enable = 0;
+static int metrofix_debug_enable = 0;
 #include <pthread.h>
 #define LOG_FPRINTF(f, s, ...)                                                 \
     do {                                                                       \
-        if (sdl_debug_enable)                                                  \
+        if (metrofix_debug_enable)                                             \
             fprintf(f, "[%p] "s, pthread_self(), __VA_ARGS__);                 \
     } while (0)
 #define DEBUGLOG(a)                                                            \
     do {                                                                       \
-        if (sdl_debug_enable)                                                  \
+        if (metrofix_debug_enable)                                             \
             fprintf(stderr, "[%p] %s\n", pthread_self(), (a));                 \
     } while (0)
 
@@ -121,6 +123,7 @@ static int my_SDL_Init(Uint32 flags) {
 
 static int override_w = 0;
 static int override_h = 0;
+static bool exclusive_fullscreen = 0;
 
 static int (*real_SDL_GetDisplayBounds)(int, SDL_Rect *) = NULL;
 
@@ -154,8 +157,9 @@ static SDL_Window *my_SDL_CreateWindow(const char *title, int x, int y, int w,
     if ((flags & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) !=
         0) {
         is_fullscreen = 1;
-        flags &= ~SDL_WINDOW_FULLSCREEN;
-        flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+        flags &= ~(SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP);
+        flags |= exclusive_fullscreen ? SDL_WINDOW_FULLSCREEN
+                                      : SDL_WINDOW_FULLSCREEN_DESKTOP;
     }
     return real_SDL_CreateWindow(title, x, y, w, h, flags);
 }
@@ -173,6 +177,8 @@ static void (*real_SDL_SetWindowSize)(SDL_Window *window, int w, int h);
 static void my_SDL_SetWindowSize(SDL_Window *window, int w, int h) {
     if (!is_fullscreen) {
         real_SDL_SetWindowSize(window, w, h);
+    } else if (exclusive_fullscreen) {
+        real_SDL_SetWindowSize(window, override_w, override_h);
     }
 }
 
@@ -564,15 +570,11 @@ static int my_SDL_PollEvent(SDL_Event *event) {
                 switch (event->window.event) {
                 case SDL_WINDOWEVENT_RESIZED:
                 case SDL_WINDOWEVENT_SIZE_CHANGED:
+                case SDL_WINDOWEVENT_MAXIMIZED:
+                case SDL_WINDOWEVENT_RESTORED:
                     event->window.data1 = override_w;
                     event->window.data2 = override_h;
                     break;
-                case SDL_WINDOWEVENT_FOCUS_LOST:
-                case SDL_WINDOWEVENT_FOCUS_GAINED:
-                case SDL_WINDOWEVENT_RESTORED:
-                case SDL_WINDOWEVENT_MAXIMIZED:
-                case SDL_WINDOWEVENT_MINIMIZED:
-                    continue; /* swallow it entirely */
                 }
             }
             break;
@@ -853,7 +855,8 @@ static void (*real_SDL_GL_SwapWindow)(SDL_Window *) = NULL;
 static void my_SDL_GL_SwapWindow(SDL_Window *window) {
     SDL_GLContext ctx = jump_table.SDL_GL_GetCurrentContext();
 
-    if (override_w > 0 && override_h > 0 && is_fullscreen) {
+    if (override_w > 0 && override_h > 0 && is_fullscreen &&
+        !exclusive_fullscreen) {
         if (!scaling_context_initialized)
             InitializeOpenGLScaling(override_w, override_h);
 
@@ -896,14 +899,15 @@ static void my_SDL_GL_SwapWindow(SDL_Window *window) {
         }
     }
 
-    real_SDL_GL_MakeCurrent(spoof_window, ctx);
-    real_SDL_GL_SwapWindow(spoof_window);
+    real_SDL_GL_MakeCurrent(window, ctx);
+    real_SDL_GL_SwapWindow(window);
 }
 
 static int (*real_SDL_SetWindowFullscreen)(SDL_Window *window, Uint32 flags);
 static int my_SDL_SetWindowFullscreen(SDL_Window *window, Uint32 flags) {
     if (flags != 0) {
-        flags = SDL_WINDOW_FULLSCREEN_DESKTOP;
+        flags = exclusive_fullscreen ? SDL_WINDOW_FULLSCREEN
+                                     : SDL_WINDOW_FULLSCREEN_DESKTOP;
         is_fullscreen = 1;
     } else {
         is_fullscreen = 0;
@@ -1025,7 +1029,7 @@ static void my_glShaderSource(unsigned int shader, int count,
     for (int i = 0; i < count; i++) {
         total_len += (length && length[i] >= 0) ? length[i] : strlen(string[i]);
     }
-    if(total_len==broken_shader_len){
+    if (total_len == broken_shader_len) {
         char *full_src = malloc(total_len + 1);
         if (full_src) {
             size_t offset = 0;
@@ -1181,7 +1185,7 @@ static void apply_vibration_patches(void) {
             exit(1);                                                           \
         }                                                                      \
         static int already_logged_call;                                        \
-        if (sdl_debug_enable && !already_logged_call) {                        \
+        if (metrofix_debug_enable && !already_logged_call) {                   \
             already_logged_call = 1;                                           \
             fprintf(stderr, "[%p] %s\n", pthread_self(), "" #fn "");           \
         }                                                                      \
@@ -1203,7 +1207,10 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table,
     }
 
     if (getenv("METROFIX_DEBUG"))
-        sdl_debug_enable = 1;
+        metrofix_debug_enable = 1;
+
+    if (getenv("METROFIX_EXCLUSIVE_FULLSCREEN"))
+        exclusive_fullscreen = 1;
 
 #define SDL_DYNAPI_PROC(rc, fn, params, args, ret)                             \
     do {                                                                       \
