@@ -1,10 +1,7 @@
-#define SDL_DYNAMIC_API_ENVVAR "SDL_DYNAMIC_API"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
 #include <SDL2/SDL_vulkan.h>
-#include <fenv.h>
 #include <unistd.h>
-#define SDL_DYNAPI_VERSION 1
 #include <GL/gl.h>
 #include <dlfcn.h>
 #include <stdint.h>
@@ -12,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+
+#define SDL_DYNAMIC_API_ENVVAR "SDL_DYNAMIC_API"
 
 static int sdl_debug_enable = 0;
 #include <pthread.h>
@@ -1004,7 +1003,11 @@ static const char broken_shader[] = {
     0x30, 0x30, 0x30, 0x30, 0x29, 0x2e, 0x78, 0x3b, 0x0a, 0x20, 0x20, 0x20,
     0x20, 0x72, 0x65, 0x74, 0x75, 0x72, 0x6e, 0x3b, 0x0a, 0x7d, 0x0a, 0x00};
 
-static uint32_t crc32(const char *s, size_t n) {
+static const size_t broken_shader_len = 515;
+
+static const uint32_t broken_shader_crc = 0xbc1e25da;
+
+static uint32_t str_crc32(const char *s, size_t n) {
     uint32_t crc = 0xFFFFFFFF;
     for (size_t i = 0; i < n; i++) {
         crc ^= (uint8_t)s[i];
@@ -1015,8 +1018,6 @@ static uint32_t crc32(const char *s, size_t n) {
     return ~crc;
 }
 
-static const uint32_t TARGET_CRC = 0xbc1e25da;
-
 static void my_glShaderSource(unsigned int shader, int count,
                               const char *const *string, const int *length) {
     /* Join the strings to check the full source */
@@ -1024,30 +1025,30 @@ static void my_glShaderSource(unsigned int shader, int count,
     for (int i = 0; i < count; i++) {
         total_len += (length && length[i] >= 0) ? length[i] : strlen(string[i]);
     }
-
-    char *full_src = malloc(total_len + 1);
-    if (full_src) {
-        size_t offset = 0;
-        for (int i = 0; i < count; i++) {
-            size_t len =
-                (length && length[i] >= 0) ? length[i] : strlen(string[i]);
-            memcpy(full_src + offset, string[i], len);
-            offset += len;
-        }
-        full_src[total_len] = '\0';
-
-        uint32_t curr_crc = crc32(full_src, total_len);
-        // DEBUGLOG(full_src);
-        LOG_FPRINTF(stderr, "[hook] Current shader crc: %08x\n", curr_crc);
-        if (curr_crc == TARGET_CRC) {
-            if (strcmp(full_src, broken_shader) == 0) {
-                DEBUGLOG("[hook] Fixing offending shader 440...");
-                real_glShaderSource(shader, 1, &FIXED_SHADER_440, NULL);
-                free(full_src);
-                return;
+    if(total_len==broken_shader_len){
+        char *full_src = malloc(total_len + 1);
+        if (full_src) {
+            size_t offset = 0;
+            for (int i = 0; i < count; i++) {
+                size_t len =
+                    (length && length[i] >= 0) ? length[i] : strlen(string[i]);
+                memcpy(full_src + offset, string[i], len);
+                offset += len;
             }
+            full_src[total_len] = '\0';
+
+            uint32_t curr_crc = str_crc32(full_src, total_len);
+            LOG_FPRINTF(stderr, "[hook] Current shader crc: %08x\n", curr_crc);
+            if (curr_crc == broken_shader_crc) {
+                if (strcmp(full_src, broken_shader) == 0) {
+                    DEBUGLOG("[hook] Fixing offending shader 440...");
+                    real_glShaderSource(shader, 1, &FIXED_SHADER_440, NULL);
+                    free(full_src);
+                    return;
+                }
+            }
+            free(full_src);
         }
-        free(full_src);
     }
 
     real_glShaderSource(shader, count, string, length);
@@ -1194,11 +1195,6 @@ static void apply_vibration_patches(void) {
 static Sint32 initialize_jumptable(Uint32 apiver, void *table,
                                    Uint32 tablesize) {
     SDL_DYNAPI_jump_table *output_jump_table = (SDL_DYNAPI_jump_table *)table;
-
-    if (apiver != SDL_DYNAPI_VERSION)
-        return -1;
-    if (tablesize > sizeof(jump_table))
-        return -1;
 
     void *sdlhandle = dlopen("libSDL2-2.0.so.0", RTLD_LOCAL | RTLD_NOW);
     if (!sdlhandle) {
