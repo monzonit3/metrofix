@@ -1098,31 +1098,38 @@ static void my_activate_vibration(void *this) {
 
     float left = (cam_left + game_left) * koef;
     float right = (cam_right + game_right) * koef;
-
     if (left < 0.0f)
         left = 0.0f;
+    else if (left > 1.0f)
+        left = 1.0f;
     if (right < 0.0f)
         right = 0.0f;
-    if (left > 1.0f)
-        left = 1.0f;
-    if (right > 1.0f)
+    else if (right > 1.0f)
         right = 1.0f;
+
+    SDL_Joystick *owner_joy = *(SDL_Joystick **)((char *)this + 0x610);
 
     joy_lock_acquire();
     for (int i = 0; i < MAX_JOYSTICKS; i++) {
-        if (joy_table[i].gc)
+        if (joy_table[i].gc && joy_table[i].joy == owner_joy) {
             jump_table.SDL_GameControllerRumble(
                 joy_table[i].gc, (Uint16)(left * 65535.0f),
-                (Uint16)(right * 65535.0f), 1000);
+                (Uint16)(right * 65535.0f), 10000);
+            break;
+        }
     }
     joy_lock_release();
 }
 
 static void my_deactivate_vibration(void *this) {
+    SDL_Joystick *owner_joy = *(SDL_Joystick **)((char *)this + 0x610);
+
     joy_lock_acquire();
     for (int i = 0; i < MAX_JOYSTICKS; i++) {
-        if (joy_table[i].gc)
-            jump_table.SDL_GameControllerRumble(joy_table[i].gc, 0, 0, 0);
+        if (joy_table[i].gc && joy_table[i].joy == owner_joy) {
+            jump_table.SDL_GameControllerRumble(joy_table[i].gc, 0, 0, 10000);
+            break;
+        }
     }
     joy_lock_release();
 }
