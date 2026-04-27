@@ -13,3 +13,9 @@ To apply the fixes download the tarball from Releases and then extract the conte
 
 ## Troubleshooting
 If you are experiencing crashes at startup try launching the Steam client first and only then open the game from the script.
+
+## Building
+To compile on a Linux host just use `make`, mind you it has only been tested using gcc on Debian 13 and it might not produce working binaries on different configurations
+
+## AI Disclosure
+LLMs have been used to aid the creation of this project
