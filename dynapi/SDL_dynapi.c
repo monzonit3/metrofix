@@ -672,7 +672,7 @@ static Uint32 my_SDL_GetRelativeMouseState(int *x, int *y, int *z) {
 
 /* ── GL scaling ── */
 
-static int scaling_context_initialized = 0;
+static int scaling_initialized = 0;
 static int OpenGLLogicalScalingWidth = 0;
 static int OpenGLLogicalScalingHeight = 0;
 static GLuint OpenGLLogicalScalingFBO = 0;
@@ -768,7 +768,7 @@ static int InitializeOpenGLScaling(int logical_w, int logical_h) {
         scaling_load_gl_procs();
 
     if (OpenGLLogicalScalingFBO && logical_w == OpenGLLogicalScalingWidth &&
-        logical_h == OpenGLLogicalScalingHeight && scaling_context_initialized)
+        logical_h == OpenGLLogicalScalingHeight && scaling_initialized)
         return SDL_TRUE;
 
     if (OpenGLLogicalScalingFBO) {
@@ -849,7 +849,7 @@ static int InitializeOpenGLScaling(int logical_w, int logical_h) {
 
     OpenGLLogicalScalingWidth = logical_w;
     OpenGLLogicalScalingHeight = logical_h;
-    scaling_context_initialized = 1;
+    scaling_initialized = 1;
     LOG_FPRINTF(stderr, "[hook] scaling FBO initialized: %dx%d\n", logical_w,
                 logical_h);
     return SDL_TRUE;
@@ -862,10 +862,10 @@ static void my_SDL_GL_SwapWindow(SDL_Window *window) {
 
     if (override_w > 0 && override_h > 0 && is_fullscreen &&
         !exclusive_fullscreen) {
-        if (!scaling_context_initialized)
+        if (!scaling_initialized)
             InitializeOpenGLScaling(override_w, override_h);
 
-        if (scaling_context_initialized && OpenGLLogicalScalingFBO) {
+        if (scaling_initialized && OpenGLLogicalScalingFBO) {
             int physical_w = 0, physical_h = 0;
             jump_table.SDL_GL_GetDrawableSize(spoof_window, &physical_w,
                                               &physical_h);
