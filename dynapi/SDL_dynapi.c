@@ -233,7 +233,7 @@ static void my_SDL_GL_DeleteContext(SDL_GLContext ctx) {
         gl_primary.window = NULL;
         gl_primary.context = NULL;
         gl_primary.initialized = 0;
-        DEBUGLOG("[hook] anchor GL context deleted — state cleared");
+        DEBUGLOG("[hook] anchor GL context deleted - state cleared");
     }
     gl_unlock();
     real_SDL_GL_DeleteContext(ctx);
@@ -286,7 +286,7 @@ static SDL_Thread *my_SDL_CreateThread(int(SDLCALL *fn)(void *),
 
     if (!init || !win || !pctx) {
         LOG_FPRINTF(stderr,
-                    "[hook] SDL_CreateThread(\"%s\") before GL context — "
+                    "[hook] SDL_CreateThread(\"%s\") before GL context - "
                     "passing through\n",
                     name ? name : "?");
         return real_SDL_CreateThread(fn, name, data);
@@ -298,7 +298,7 @@ static SDL_Thread *my_SDL_CreateThread(int(SDLCALL *fn)(void *),
     if (!caller_ctx) {
         LOG_FPRINTF(stderr,
                     "[hook] SDL_CreateThread(\"%s\"): calling thread has no "
-                    "current GL context — passing through\n",
+                    "current GL context - passing through\n",
                     name ? name : "?");
         return real_SDL_CreateThread(fn, name, data);
     }
@@ -310,7 +310,7 @@ static SDL_Thread *my_SDL_CreateThread(int(SDLCALL *fn)(void *),
     if (!shared_ctx) {
         LOG_FPRINTF(stderr,
                     "[hook] SDL_CreateThread(\"%s\"): shared context creation "
-                    "failed (%s) — passing through\n",
+                    "failed (%s) - passing through\n",
                     name ? name : "?", jump_table.SDL_GetError());
         jump_table.SDL_GL_MakeCurrent(caller_win, caller_ctx);
         return real_SDL_CreateThread(fn, name, data);
@@ -594,7 +594,7 @@ static int my_SDL_PollEvent(SDL_Event *event) {
                         jump_table.SDL_GameControllerClose(joy_table[i].gc);
                         joy_table[i].gc = NULL;
                     }
-                    /* leave joy entry — game will call JoystickClose */
+                    /* leave joy entry - game will call JoystickClose */
                     break;
                 }
             }
@@ -602,7 +602,7 @@ static int my_SDL_PollEvent(SDL_Event *event) {
             break;
         }
 
-        /* suppress raw joystick state events and controller events —
+        /* suppress raw joystick state events and controller events -
          * game uses joystick API only, we synthesize from gc */
         case SDL_JOYAXISMOTION:
         case SDL_JOYBALLMOTION:
@@ -617,7 +617,7 @@ static int my_SDL_PollEvent(SDL_Event *event) {
         case SDL_CONTROLLERAXISMOTION:
             continue;
 
-        /* accumulate mouse state for GetRelativeMouseState —
+        /* accumulate mouse state for GetRelativeMouseState -
          * 4A broke the ABI by adding a z parameter */
         case SDL_MOUSEMOTION:
             my_xdelta += event->motion.xrel;
@@ -642,7 +642,7 @@ static int my_SDL_PollEvent(SDL_Event *event) {
     }
 }
 
-/* SDL_GetRelativeMouseState — 4A extended with z parameter, stock SDL has 2
+/* SDL_GetRelativeMouseState - 4A extended with z parameter, stock SDL has 2
  * args. We track deltas ourselves in my_SDL_PollEvent to avoid calling stock
  * SDL's version which would pump the wrong event queue. */
 static Uint32 (*real_SDL_GetRelativeMouseState)(int *, int *) = NULL;
@@ -828,7 +828,7 @@ static int InitializeOpenGLScaling(int logical_w, int logical_h) {
         my_glDeleteFramebuffers(1, &OpenGLLogicalScalingFBO);
         OpenGLLogicalScalingFBO = OpenGLLogicalScalingColor =
             OpenGLLogicalScalingDepth = 0;
-        DEBUGLOG("[hook] scaling FBO incomplete — scaling disabled");
+        DEBUGLOG("[hook] scaling FBO incomplete - scaling disabled");
         return SDL_FALSE;
     }
 
@@ -871,7 +871,7 @@ static void my_SDL_GL_SwapWindow(SDL_Window *window) {
             GLfloat cc[4];
             my_glGetFloatv(GL_COLOR_CLEAR_VALUE, cc);
 
-            /* game rendered to FBO 0 at logical res — copy to scaling FBO */
+            /* game rendered to FBO 0 at logical res - copy to scaling FBO */
             my_glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
             my_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, OpenGLLogicalScalingFBO);
             my_glBlitFramebuffer(0, 0, override_w, override_h, 0, 0, override_w,
@@ -921,7 +921,7 @@ static SDL_bool my_SDL_GetWindowWMInfo(SDL_Window *window,
     return SDL_FALSE;
 }
 
-/* -- GL proc address hook (shader fix + future hooks) -- */
+/* -- GL proc address hook (shader fix) -- */
 
 typedef void (*PFNGLSHADERSOURCEPROC)(unsigned int shader, int count,
                                       const char *const *string,
@@ -1074,13 +1074,6 @@ static void patch_write(void *dst, void *src, size_t len) {
     uintptr_t page = (uintptr_t)dst & ~(4095UL);
     mprotect((void *)page, 4096, PROT_READ | PROT_WRITE | PROT_EXEC);
     memcpy(dst, src, len);
-    mprotect((void *)page, 4096, PROT_READ | PROT_EXEC);
-}
-
-static void patch_nop(void *dst, size_t len) {
-    uintptr_t page = (uintptr_t)dst & ~(4095UL);
-    mprotect((void *)page, 4096, PROT_READ | PROT_WRITE | PROT_EXEC);
-    memset(dst, 0x90, len);
     mprotect((void *)page, 4096, PROT_READ | PROT_EXEC);
 }
 
