@@ -88,7 +88,7 @@ static EGLSeat *seat_acquire(void) {
     return current_seat;
 }
 
-/* ── GL surface / swap ── */
+/* -- GL surface / swap -- */
 
 static int (*real_SDL_GL_SetAttribute)(SDL_GLattr attr, int value);
 
@@ -105,7 +105,7 @@ static int my_SDL_GL_MakeCurrent(SDL_Window *window, SDL_GLContext context) {
 static SDL_Window *(*real_SDL_GL_GetCurrentWindow)(void) = NULL;
 static SDL_Window *my_SDL_GL_GetCurrentWindow(void) { return spoof_window; }
 
-/* ── Init ── */
+/* -- Init -- */
 
 static int (*real_SDL_Init)(Uint32) = NULL;
 static int my_SDL_Init(Uint32 flags) {
@@ -119,7 +119,7 @@ static int my_SDL_Init(Uint32 flags) {
     return real_SDL_Init(flags);
 }
 
-/* ── Resolution override ── */
+/* -- Resolution override -- */
 
 static int override_w = 0;
 static int override_h = 0;
@@ -136,7 +136,7 @@ static int my_SDL_GetDisplayBounds(int displayIndex, SDL_Rect *rect) {
     return ret;
 }
 
-/* ── Window management ── */
+/* -- Window management -- */
 
 static SDL_Window *(*real_SDL_CreateWindow)(const char *, int, int, int, int,
                                             Uint32) = NULL;
@@ -182,7 +182,7 @@ static void my_SDL_SetWindowSize(SDL_Window *window, int w, int h) {
     }
 }
 
-/* ── GL context management ── */
+/* -- GL context management -- */
 
 static SDL_GLContext (*real_SDL_GL_CreateContext)(SDL_Window *) = NULL;
 
@@ -239,7 +239,7 @@ static void my_SDL_GL_DeleteContext(SDL_GLContext ctx) {
     real_SDL_GL_DeleteContext(ctx);
 }
 
-/* ── Thread wrapping ── */
+/* -- Thread wrapping -- */
 
 typedef struct {
     int(SDLCALL *real_fn)(void *);
@@ -338,7 +338,7 @@ static SDL_Thread *my_SDL_CreateThread(int(SDLCALL *fn)(void *),
     return real_SDL_CreateThread(wrapped_thread_fn, name, wd);
 }
 
-/* ── Joystick → Xbox 360 GameController wrapper ──
+/* -- Joystick -> Xbox 360 GameController wrapper --
  *
  * The game uses raw SDL_Joystick API with assumed Xbox 360 layout indices.
  * We intercept every joystick call and remap through SDL_GameController
@@ -364,16 +364,6 @@ static JoyEntry *joy_find(SDL_Joystick *joy) {
         if (joy_table[i].joy == joy)
             return &joy_table[i];
     return NULL;
-}
-
-static int (*real_SDL_NumJoysticks)(void) = NULL;
-static int my_SDL_NumJoysticks(void) {
-    int total = real_SDL_NumJoysticks();
-    int count = 0;
-    for (int i = 0; i < total; i++)
-        if (jump_table.SDL_IsGameController(i))
-            count++;
-    return count;
 }
 
 static SDL_Joystick *my_SDL_JoystickOpen(int device_index) {
@@ -549,7 +539,7 @@ static Uint8 my_SDL_JoystickGetHat(SDL_Joystick *joy, int hat) {
     return val;
 }
 
-/* ── Event pump ── */
+/* -- Event pump -- */
 
 static int (*real_SDL_PollEvent)(SDL_Event *) = NULL;
 
@@ -670,7 +660,7 @@ static Uint32 my_SDL_GetRelativeMouseState(int *x, int *y, int *z) {
     return my_buttonstate;
 }
 
-/* ── GL scaling ── */
+/* -- GL scaling -- */
 
 static int scaling_initialized = 0;
 static int OpenGLLogicalScalingWidth = 0;
@@ -931,7 +921,7 @@ static SDL_bool my_SDL_GetWindowWMInfo(SDL_Window *window,
     return SDL_FALSE;
 }
 
-/* ── GL proc address hook (shader fix + future hooks) ── */
+/* -- GL proc address hook (shader fix + future hooks) -- */
 
 typedef void (*PFNGLSHADERSOURCEPROC)(unsigned int shader, int count,
                                       const char *const *string,
@@ -1078,7 +1068,7 @@ static void *my_SDL_GL_GetProcAddress(const char *proc) {
     return ret;
 }
 
-/* ── Vibration patches ──*/
+/* -- Vibration patches --*/
 
 static void patch_write(void *dst, void *src, size_t len) {
     uintptr_t page = (uintptr_t)dst & ~(4095UL);
@@ -1188,7 +1178,7 @@ static void apply_vibration_patches(void) {
     DEBUGLOG("[hook] vibration patches applied");
 }
 
-/* ── Jump table wrappers (generated) ── */
+/* -- Jump table wrappers (generated) -- */
 
 #define SDL_DYNAPI_PROC(rc, fn, params, args, ret)                             \
     static rc wrapper_##fn params {                                            \
@@ -1206,7 +1196,7 @@ static void apply_vibration_patches(void) {
 #include "SDL_dynapi_procs.h"
 #undef SDL_DYNAPI_PROC
 
-/* ── Entry point ── */
+/* -- Entry point -- */
 
 static Sint32 initialize_jumptable(Uint32 apiver, void *table,
                                    Uint32 tablesize) {
@@ -1293,9 +1283,7 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table,
     real_SDL_PollEvent = jump_table.SDL_PollEvent;
     jump_table.SDL_PollEvent = my_SDL_PollEvent;
 
-    /* Joystick → GameController remapping */
-    real_SDL_NumJoysticks = jump_table.SDL_NumJoysticks;
-    jump_table.SDL_NumJoysticks = my_SDL_NumJoysticks;
+    /* Joystick -> GameController remapping */
     jump_table.SDL_JoystickOpen = my_SDL_JoystickOpen;
     jump_table.SDL_JoystickClose = my_SDL_JoystickClose;
     jump_table.SDL_JoystickGetAttached = my_SDL_JoystickGetAttached;
@@ -1308,7 +1296,7 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table,
     jump_table.SDL_JoystickGetButton = my_SDL_JoystickGetButton;
     jump_table.SDL_JoystickGetHat = my_SDL_JoystickGetHat;
 
-    /* 4A broke the ABI — GetRelativeMouseState has an extra z parameter */
+    /* 4A broke the ABI - GetRelativeMouseState has an extra z parameter */
     real_SDL_GetRelativeMouseState = jump_table.SDL_GetRelativeMouseState;
     jump_table.SDL_GetRelativeMouseState = (void *)my_SDL_GetRelativeMouseState;
 
