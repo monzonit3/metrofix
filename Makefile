@@ -6,7 +6,7 @@ LDFLAGS = -shared -s
 SHLIB = metrofix.so
 
 HEADERS = $(wildcard dynapi/*.h)
-OBJ = dynapi/SDL_dynapi.o
+OBJ = dynapi/metrofix.o
 
 LDLIBS =
 

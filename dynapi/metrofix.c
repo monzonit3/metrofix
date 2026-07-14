@@ -354,10 +354,6 @@ typedef struct {
 } JoyEntry;
 
 static JoyEntry joy_table[MAX_JOYSTICKS];
-static SDL_mutex *joy_lock = NULL;
-
-static void joy_lock_acquire(void) { jump_table.SDL_LockMutex(joy_lock); }
-static void joy_lock_release(void) { jump_table.SDL_UnlockMutex(joy_lock); }
 
 static JoyEntry *joy_find(SDL_Joystick *joy) {
     for (int i = 0; i < MAX_JOYSTICKS; i++)
@@ -370,13 +366,11 @@ static SDL_Joystick *my_SDL_JoystickOpen(int device_index) {
     if (!jump_table.SDL_IsGameController(device_index))
         return NULL;
 
-    joy_lock_acquire();
     for (int i = 0; i < MAX_JOYSTICKS; i++) {
         if (!joy_table[i].joy) {
             SDL_GameController *gc =
                 jump_table.SDL_GameControllerOpen(device_index);
             if (!gc) {
-                joy_lock_release();
                 return NULL;
             }
             SDL_Joystick *real_joy =
@@ -386,16 +380,13 @@ static SDL_Joystick *my_SDL_JoystickOpen(int device_index) {
             joy_table[i].device_index = device_index;
             LOG_FPRINTF(stderr, "[hook] JoystickOpen(%d): gc=%p joy=%p\n",
                         device_index, (void *)gc, (void *)real_joy);
-            joy_lock_release();
             return real_joy;
         }
     }
-    joy_lock_release();
     return NULL;
 }
 
 static void my_SDL_JoystickClose(SDL_Joystick *joy) {
-    joy_lock_acquire();
     JoyEntry *e = joy_find(joy);
     if (e) {
         if (e->gc)
@@ -404,14 +395,11 @@ static void my_SDL_JoystickClose(SDL_Joystick *joy) {
         e->gc = NULL;
         e->device_index = -1;
     }
-    joy_lock_release();
 }
 
 static SDL_bool my_SDL_JoystickGetAttached(SDL_Joystick *joy) {
-    joy_lock_acquire();
     JoyEntry *e = joy_find(joy);
     SDL_bool result = (e && e->gc) ? SDL_TRUE : SDL_FALSE;
-    joy_lock_release();
     return result;
 }
 
@@ -420,42 +408,32 @@ static void my_SDL_JoystickUpdate(void) {
 }
 
 static const char *my_SDL_JoystickName(SDL_Joystick *joy) {
-    joy_lock_acquire();
     JoyEntry *e = joy_find(joy);
     int has_gc = e && e->gc;
-    joy_lock_release();
     return has_gc ? "Xbox 360 Controller" : NULL;
 }
 
 static int my_SDL_JoystickNumAxes(SDL_Joystick *joy) {
-    joy_lock_acquire();
     JoyEntry *e = joy_find(joy);
     int has_gc = e && e->gc;
-    joy_lock_release();
     return has_gc ? 6 : 0;
 }
 
 static int my_SDL_JoystickNumButtons(SDL_Joystick *joy) {
-    joy_lock_acquire();
     JoyEntry *e = joy_find(joy);
     int has_gc = e && e->gc;
-    joy_lock_release();
     return has_gc ? 11 : 0;
 }
 
 static int my_SDL_JoystickNumHats(SDL_Joystick *joy) {
-    joy_lock_acquire();
     JoyEntry *e = joy_find(joy);
     int has_gc = e && e->gc;
-    joy_lock_release();
     return has_gc ? 1 : 0;
 }
 
 static Sint16 my_SDL_JoystickGetAxis(SDL_Joystick *joy, int axis) {
-    joy_lock_acquire();
     JoyEntry *e = joy_find(joy);
     SDL_GameController *gc = e ? e->gc : NULL;
-    joy_lock_release();
 
     if (!gc)
         return 0;
@@ -486,10 +464,8 @@ static Sint16 my_SDL_JoystickGetAxis(SDL_Joystick *joy, int axis) {
 }
 
 static Uint8 my_SDL_JoystickGetButton(SDL_Joystick *joy, int button) {
-    joy_lock_acquire();
     JoyEntry *e = joy_find(joy);
     SDL_GameController *gc = e ? e->gc : NULL;
-    joy_lock_release();
 
     if (!gc)
         return 0;
@@ -513,10 +489,8 @@ static Uint8 my_SDL_JoystickGetButton(SDL_Joystick *joy, int button) {
 }
 
 static Uint8 my_SDL_JoystickGetHat(SDL_Joystick *joy, int hat) {
-    joy_lock_acquire();
     JoyEntry *e = joy_find(joy);
     SDL_GameController *gc = e ? e->gc : NULL;
-    joy_lock_release();
 
     if (!gc)
         return SDL_HAT_CENTERED;
@@ -583,7 +557,6 @@ static int my_SDL_PollEvent(SDL_Event *event) {
 
         case SDL_JOYDEVICEREMOVED: {
             SDL_JoystickID iid = event->jdevice.which;
-            joy_lock_acquire();
             for (int i = 0; i < MAX_JOYSTICKS; i++) {
                 if (joy_table[i].joy && jump_table.SDL_JoystickInstanceID(
                                             joy_table[i].joy) == iid) {
@@ -598,7 +571,6 @@ static int my_SDL_PollEvent(SDL_Event *event) {
                     break;
                 }
             }
-            joy_lock_release();
             break;
         }
 
@@ -1096,30 +1068,21 @@ static void my_activate_vibration(void *this) {
         right = 1.0f;
 
     SDL_Joystick *owner_joy = *(SDL_Joystick **)((char *)this + 0x610);
+    JoyEntry *e = joy_find(owner_joy);
 
-    joy_lock_acquire();
-    for (int i = 0; i < MAX_JOYSTICKS; i++) {
-        if (joy_table[i].gc && joy_table[i].joy == owner_joy) {
-            jump_table.SDL_GameControllerRumble(
-                joy_table[i].gc, (Uint16)(left * 65535.0f),
-                (Uint16)(right * 65535.0f), 10000);
-            break;
-        }
+    if(e!=NULL){
+        jump_table.SDL_GameControllerRumble(
+            e->gc, (Uint16)(left * 65535.0f),
+            (Uint16)(right * 65535.0f), 10000);
     }
-    joy_lock_release();
 }
 
 static void my_deactivate_vibration(void *this) {
     SDL_Joystick *owner_joy = *(SDL_Joystick **)((char *)this + 0x610);
-
-    joy_lock_acquire();
-    for (int i = 0; i < MAX_JOYSTICKS; i++) {
-        if (joy_table[i].gc && joy_table[i].joy == owner_joy) {
-            jump_table.SDL_GameControllerRumble(joy_table[i].gc, 0, 0, 10000);
-            break;
-        }
+    JoyEntry *e = joy_find(owner_joy);
+    if(e!=NULL){
+        jump_table.SDL_GameControllerRumble(e->gc, 0, 0, 10000);
     }
-    joy_lock_release();
 }
 
 static void my_set_vibration_game(void *this, float left, float right) {
@@ -1204,9 +1167,6 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table,
     if (getenv("METROFIX_DEBUG"))
         metrofix_debug_enable = 1;
 
-    if (getenv("METROFIX_EXCLUSIVE_FULLSCREEN"))
-        exclusive_fullscreen = 1;
-
 #define SDL_DYNAPI_PROC(rc, fn, params, args, ret)                             \
     do {                                                                       \
         real_jump_table.fn = dlsym(sdlhandle, #fn);                            \
@@ -1227,12 +1187,6 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table,
         exit(1);
     }
 
-    joy_lock = jump_table.SDL_CreateMutex();
-    if (!joy_lock) {
-        fputs("[hook] joy_lock failed\n", stderr);
-        exit(1);
-    }
-
     apply_vibration_patches();
 
     /* resolution override */
@@ -1242,6 +1196,9 @@ static Sint32 initialize_jumptable(Uint32 apiver, void *table,
         LOG_FPRINTF(stderr, "[hook] logical resolution override: %dx%d\n",
                     override_w, override_h);
     }
+
+    if (getenv("METROFIX_EXCLUSIVE_FULLSCREEN"))
+        exclusive_fullscreen = 1;
 
     /* SDL_Init */
     real_SDL_Init = jump_table.SDL_Init;
